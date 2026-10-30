@@ -100,6 +100,13 @@ button { transition: background-color .1s, border-color .1s; }
 .segmented button.is-active { background: var(--accent-tint); color: #244e78; }
 .file-type { font: 10px var(--mono); color: #677585; }
 .export-section .ribbon-large { width: 138px; flex-direction: row; gap: 5px; }
+.panel-problems > summary { color: #88471c; }
+.panel-problem-list { list-style: none; margin: 8px 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.panel-problem-list li { margin: 0 0 8px; padding: 0 0 7px; border-bottom: 1px solid var(--line-soft); }
+.panel-problem-list p { margin: 3px 0 0; font-size: 11px; line-height: 1.45; }
+.problem-select { padding: 3px 6px; border: 1px solid #c3b19e; background: #fff8ef; color: #7b421f; font-weight: 600; font-size: 11px; }
+.problem-select:hover, .problem-select[aria-pressed="true"] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-dark); }
+#export-repair-shortcut { width: 100%; font-size: 11px; }
 .export-layout-field input { width: 90px; min-height: 24px; padding: 2px 5px; border: 1px solid #b7c2cc; background: white; font-size: 11px; }
 .fabrication-note { display: flex; align-items: flex-start; width: 275px; padding: 0 8px; gap: 7px; color: var(--muted); }
 .fabrication-note svg { width: 16px; height: 16px; margin-top: 2px; }

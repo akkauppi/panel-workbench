@@ -60,6 +60,7 @@ const validationWorker = new Worker('./worker.js', { type: 'module' });
 let rhinoWorker = null;
 const rhinoRequests = new Map();
 let rhinoSequence = 0, exportingRhino = false;
+let diagnosticResult = null, diagnosticWaiting = null;
 function rhinoOperation(inputs) {
   if (!rhinoWorker) {
     rhinoWorker = new Worker('./rhino-worker.js', { type: 'module' });
@@ -552,7 +553,7 @@ function updateInspector() {
   $('cell-weight-help').textContent = state.pattern.type !== 'organic' ? 'Use corner editing and merges to reshape this layout.' : state.directBase ? 'Reset direct edits to change generated cell influence.' : state.cornerEdits.length ? 'Reset corners to change cell influence while keeping merged groups.' : (cell.memberSeedIds?.length ?? 1) > 1 ? 'This merged cell keeps its original regions. Undo the merge to edit their centres or influence.' : state.selectedIds.length > 1 ? 'Select one cell to adjust its influence.' : 'Give this cell more area. Its neighbours adjust.';
   const solid = state.result?.solids?.find(s => s.id === cell.id);
   const fittedIssues = cell.issues || [], notes = [];
-  if (state.view === 'solid') {
+  if (state.view === 'solid' || !cell.valid || (solid && !solid.valid)) {
     if (!cell.valid && fittedIssues.length) notes.push(`Fitted panel: ${fittedIssues.join(' ')}`);
     const solidIssues = (solid?.issues || []).filter(issue => !(!cell.valid && fittedIssues.length && issue === 'Reshape this cell before making a solid panel.'));
     if (solidIssues.length) notes.push(`Solid panel: ${solidIssues.join(' ')}`);
@@ -1131,37 +1132,85 @@ function download(name, content, type) {
   const a = document.createElement('a'); a.href = url; a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
+function panelProblems() {
+  const solids = new Map((state.result?.solids || []).map(solid => [solid.id, solid]));
+  return state.cells.flatMap(cell => {
+    const solid = solids.get(cell.id);
+    if (cell.valid && solid?.valid) return [];
+    const flatIssues = cell.valid ? [] : cell.issues || [];
+    const solidIssues = (solid?.issues || []).filter(issue => !(!cell.valid && flatIssues.length && issue === 'Reshape this cell before making a solid panel.'));
+    return [{ id: cell.id, stage: !cell.valid ? 'Outline' : 'Solid',
+      issues: [...flatIssues.map(issue => `Outline: ${issue}`), ...solidIssues.map(issue => `Solid: ${issue}`),
+        ...(!solid ? ['Solid: no solid geometry was produced.'] : [])] }];
+  });
+}
+function updatePanelDiagnostics(waiting) {
+  if (diagnosticResult === state.result && diagnosticWaiting === waiting) {
+    for (const button of $('panel-problem-list').querySelectorAll('[data-panel-id]')) button.setAttribute('aria-pressed', String(Number(button.dataset.panelId) === state.selected));
+    return;
+  }
+  diagnosticResult = state.result; diagnosticWaiting = waiting;
+  const problems = panelProblems();
+  $('panel-problems').hidden = !problems.length;
+  $('panel-problem-count').textContent = String(problems.length);
+  $('panel-problem-summary').textContent = waiting ? 'Updating panel checks. Export waits for the current calculation.' : `${problems.length} of ${state.cells.length} panels need review. Select a panel below to locate it and inspect its geometry.`;
+  $('panel-problem-list').replaceChildren();
+  if (waiting) return;
+  for (const problem of problems) {
+    const item = document.createElement('li'), button = document.createElement('button'), note = document.createElement('p');
+    button.type = 'button'; button.className = 'problem-select'; button.dataset.panelId = problem.id;
+    button.textContent = `${panelId(problem.id)} · ${problem.stage}`;
+    button.setAttribute('aria-pressed', String(problem.id === state.selected));
+    button.addEventListener('click', () => { showView(problem.stage === 'Outline' ? 'flat' : 'solid'); selectCell(problem.id); });
+    note.textContent = problem.issues.join(' ') || 'No usable geometry was produced.';
+    item.append(button, note); $('panel-problem-list').append(item);
+  }
+}
 function updateExportAvailability() {
   const waiting = state.busy || !!state.pending || !state.cells.length || !state.solved || !!cornerPending || drag?.kind === 'corner';
+  const waitingReason = !state.cells.length ? 'Load a model and calculate panels first.' : cornerPending || drag?.kind === 'corner'
+    ? 'Finish the corner edit and wait for validation.' : 'Wait for the current panel calculation.';
   const invalid = state.cells.some(c => !c.valid);
   const solids = state.result?.solids || [], solidInvalid = solids.some(s => !s.valid);
+  const problems = panelProblems(), problemReason = `${problems.length} panels need repair. Select a panel under Panels to resolve, or use Rhino repair export.`;
   const selected = state.cells.find(c => c.id === state.selected), selectedSolid = solids.find(s => s.id === state.selected);
   $('export-obj').disabled = waiting || state.view === 'reference' || (state.view === 'flat' && invalid) || (state.view === 'solid' && solidInvalid);
   $('save-study').disabled = waiting;
   $('export-dxf').disabled = waiting || invalid;
-  $('export-dxf').title = invalid ? 'Some cells fold or split when flattened. Move their centres or reduce the cell size.' : 'Export flat outlines in millimetres';
+  $('export-dxf').title = waiting ? waitingReason : invalid ? 'Some fitted outlines cross, collapse or cannot be flattened. See Panels to resolve.' : 'Export flat outlines in millimetres';
   $('export-stl').disabled = waiting || !solids.length || solidInvalid;
   $('export-rhino').disabled = waiting || exportingRhino || invalid || solidInvalid || solids.length !== state.cells.length;
-  $('export-rhino').title = 'Named shared blocks: assembled parts and flat full-thickness copies. Uses current carving settings.';
-  $('export-stl').title = solidInvalid ? 'Some solid panels need adjustment. Select a resolved panel to export it individually.' : 'Export the solid panel meshes';
+  $('export-rhino').title = waiting ? waitingReason : exportingRhino ? 'Preparing the Rhino file.' : problems.length ? problemReason : 'Rhino 6-compatible shared blocks: assembled parts and flat full-thickness copies. Uses current carving settings.';
+  $('export-rhino-repair').disabled = waiting || exportingRhino;
+  $('export-rhino-repair').title = waiting ? waitingReason : 'Override panel validity for Rhino editing. Includes every panel, available geometry and diagnostic notes. Review and repair before fabrication.';
+  $('export-repair-shortcut').disabled = $('export-rhino-repair').disabled;
+  $('export-repair-shortcut').title = $('export-rhino-repair').title;
+  $('export-availability').textContent = waiting ? waitingReason : exportingRhino ? 'Preparing the Rhino file…' : problems.length ? `${problems.length} panels unresolved. Production export needs valid parts. Rhino repair includes candidates and reasons.` : 'All panels resolved. Rhino 6 / 7 / 8 exports are available.';
+  $('export-stl').title = waiting ? waitingReason : solidInvalid ? problemReason : 'Export the solid panel meshes';
   $('export-selected-dxf').disabled = waiting || !selected?.valid;
   $('export-selected-obj').disabled = waiting || (state.view === 'solid' ? !selectedSolid?.valid : !selected?.valid);
-  $('export-obj').title = state.view === 'surface' ? 'Export the current cells on the reference surface' : 'Export fitted flat panel candidates';
+  $('export-obj').title = waiting ? waitingReason : state.view === 'reference' ? 'Choose Cells, Flat or Solid to export panels.' : $('export-obj').disabled ? problemReason : state.view === 'surface' ? 'Export the current cells on the reference surface' : 'Export fitted flat panel candidates';
+  $('export-selected-dxf').title = waiting ? waitingReason : !selected ? 'Select a panel first.' : !selected.valid ? 'This panel has an unresolved outline. See its diagnostic note or use Rhino repair.' : 'Export the selected flat outline.';
+  $('export-selected-obj').title = waiting ? waitingReason : !selected ? 'Select a panel first.' : $('export-selected-obj').disabled ? 'This panel is unresolved. See its diagnostic note or use Rhino repair.' : 'Export the selected panel.';
   $('export-obj').childNodes.forEach(n => { if (n.nodeType === Node.TEXT_NODE && n.textContent.trim()) n.textContent = state.view === 'surface' ? '3D cell layout ' : state.view === 'solid' ? '3D solid panels ' : '3D flat panels '; });
+  updatePanelDiagnostics(waiting);
 }
-$('export-rhino').addEventListener('click', async () => {
+async function exportRhino(repair = false) {
   updateExportAvailability();
-  if ($('export-rhino').disabled) return;
+  if ($(repair ? 'export-rhino-repair' : 'export-rhino').disabled) return;
   const name=state.name;
-  exportingRhino=true;updateExportAvailability();setStatus('Preparing linked Rhino panel blocks…');
+  exportingRhino=true;updateExportAvailability();setStatus(repair ? 'Preparing all panels and diagnostic notes for Rhino repair…' : 'Preparing linked Rhino panel blocks…');
   try {
-    const {bytes}=await rhinoOperation({operation:'export',cells:state.cells,solids:state.result.solids,
+    const {bytes}=await rhinoOperation({operation:repair ? 'repair-export' : 'export',cells:state.cells,solids:state.result.solids,sourceCells:repair ? state.result.surfaceCells : undefined,
       options:{name,up:$('model-up').value,carved:state.carve,rowWidth:Number($('export-row-width').value),spacing:Number($('export-spacing').value)}});
-    download(`${name}-production.3dm`,bytes,'application/octet-stream');
-    setStatus('Rhino blocks exported · Assembly and flat parts share definitions · Nominal outlines; prepare toolpaths in CAM');
+    download(`${name}-${repair ? 'repair' : 'production'}.3dm`,bytes,'application/octet-stream');
+    setStatus(repair ? 'Rhino repair file exported · Every panel included with geometry type and diagnostic notes · Repair candidates before fabrication' : 'Rhino blocks exported · Assembly and flat parts share definitions · Nominal outlines; prepare toolpaths in CAM');
   } catch(error) {setStatus(`Could not export Rhino: ${error.message}`,true);}
   finally {exportingRhino=false;updateExportAvailability();}
-});
+}
+$('export-rhino').addEventListener('click', () => exportRhino(false));
+$('export-rhino-repair').addEventListener('click', () => exportRhino(true));
+$('export-repair-shortcut').addEventListener('click', () => exportRhino(true));
 $('export-obj').addEventListener('click', () => {
   try {
     const flat = state.view !== 'surface';

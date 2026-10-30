@@ -35,3 +35,5 @@ The gallery uses procedural synthetic examples. No private reference models, sav
 ## Rhino files and production blocks
 
 Use **Open mesh** for a Rhino `.3dm` containing mesh geometry or closed coplanar source curves. **Export → Rhino production · 3DM** writes each valid full part as one named block definition with an assembled and a flat instance. The actual carving setting is preserved. Read the [Rhino workflow](docs/rhino-workflow.md) for supported source objects, shared-block editing, and CAM preparation limits. Native file reading/writing uses bundled rhino3dm 8.35.0 (MIT); see demo/vendor/rhino3dm/NOTICE.txt.
+
+Both Rhino exports use Rhino 6 format, also readable in Rhino 7 and 8. **Panels to resolve** lists individual outline and solid failures. **Rhino repair · 3DM** explicitly exports every panel with diagnostic user text and shared assembly/inspection blocks; where no solid exists, it includes the source patch and available candidate outlines for editing in Rhino. These repair candidates require geometry checks before fabrication.

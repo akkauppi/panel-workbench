@@ -40,7 +40,7 @@ Set thickness, edge rounding, orientation, and carving as required, then let the
 current calculation finish. Choose **Export → Rhino production · 3DM**.
 Unresolved flat or solid panels must be corrected before this export is available.
 
-The file uses the Rhino 7 format (also readable in Rhino 8), millimetres, and
+The file uses the Rhino 6 format (also readable in Rhino 7 and 8), millimetres, and
 Rhino's Z-up coordinates. Every panel has one block
 definition, named `P001`, `P002`, and so on. Each definition contains the full
 panel mesh and closed nominal outline curves. The mesh preserves the geometry
@@ -66,6 +66,40 @@ diameter, tool access, fixtures, and machining operations in the CAM workflow.
 The exported part remains a mesh; export does not reconstruct smooth NURBS
 surfaces or Rhino polysolids.
 
+## Export unresolved panels for repair
+
+Choose **Export → Rhino repair · 3DM** when some panels remain unresolved and
+you want to finish them in Rhino. This explicit repair export includes every
+panel; the normal production export still requires resolved geometry. Both
+exports use the Rhino 6 file format.
+
+Each panel keeps its `P001`-style name and shared block definition, with an
+assembled instance and another instance on **Repair layout** beside it. The
+repair layout rotates and translates the same geometry for inspection. A source
+patch can remain curved, open, or zero-thickness in that layout.
+
+- A resolved panel retains its actual full part, including the selected carving.
+- An unresolved panel with usable solid candidate geometry retains that candidate.
+- If no usable solid was produced, its original source mesh patch is included.
+  The exporter does not invent thickness or carving for that patch.
+- Finite fitted candidate outlines are included on **Repair outlines**, even when
+  they cross or are non-planar. They retain their original 3D position and are
+  marked as candidates rather than cutting paths. Unusable outlines are recorded
+  in the repair notes.
+
+Resolved meshes are on **Resolved parts**; unresolved meshes are orange on
+**Unresolved parts**. Select a block or its members and inspect the Rhino
+attribute user text for `panel-workbench-status`, `panel-workbench-representation`,
+`panel-workbench-flat-issues`, `panel-workbench-solid-issues`, and
+`panel-workbench-repair-notes`. The block description also lists the diagnosis.
+The same diagnostics are stored on both instances and the shared definition.
+
+Use **BlockEdit** to repair the shared geometry. Changes appear in both
+placements. Repair geometry is not a production-ready solid or a planar cutting
+layout; verify the result in Rhino before fabrication. If a panel has neither a
+usable candidate mesh nor a usable source patch, export fails with its panel
+name rather than silently omitting it.
+
 ## Edit the linked panels in Rhino
 
 Open the exported file and use **BlockEdit** on either instance of a panel.
@@ -82,7 +116,7 @@ part from Workbench and export again. Saving a new `.3dm` from Workbench does no
 patch an already edited Rhino document automatically.
 
 Reimporting an unmodified Workbench export recognizes its placement metadata and
-imports the assembled meshes without duplicating the flat layout. This produces
+imports the assembled meshes without duplicating the flat or repair layout. This produces
 a new source mesh; it does not restore panel-editing history, settings, or the
 authored layout. Use the saved study JSON to resume the Workbench design.
 

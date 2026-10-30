@@ -86,11 +86,16 @@ registerHooks({
 });
 
 const validationReplies = [], heldValidationReplies = [], heldFitReplies = [], rhinoExports = [];
-let holdNextValidationReply = false, holdNextFitReply = false;
+let holdNextValidationReply = false, holdNextFitReply = false, alterNextFitReply = null;
 globalThis.Worker = class {
   constructor(path) {
     const owner = this;
     this.context = { postMessage(data) {
+      if (data.result && alterNextFitReply) {
+        data = structuredClone(data);
+        const alter = alterNextFitReply; alterNextFitReply = null;
+        alter(data.result);
+      }
       const deliver = () => queueMicrotask(() => {
         owner.onmessage?.({ data: structuredClone(data) });
         if (data.validationId !== undefined) validationReplies.push(structuredClone(data));
@@ -107,7 +112,7 @@ globalThis.Worker = class {
   }
   postMessage(data) {
     const copy = structuredClone(data);
-    if (data.operation === 'export') rhinoExports.push(copy);
+    if (data.operation === 'export' || data.operation === 'repair-export') rhinoExports.push(copy);
     this.ready.then(() => setTimeout(() => {
       try { this.context.onmessage({ data: copy }); }
       catch (error) { this.onerror?.(error); }
@@ -1776,7 +1781,7 @@ assert.equal(rhinoExports.at(-1).options.carved, true);
 assert.deepEqual(rhinoExports.at(-1).solids, state.result.solids, 'native export receives the newly selected carved geometry');
 const production=rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
 assert.equal(production.instanceDefinitions().count,state.cells.length);
-assert.equal(production.archiveVersion,70,'Rhino production supports Rhino 7 and 8');
+assert.equal(production.archiveVersion,60,'Rhino production supports Rhino 6, 7 and 8');
 for (let i = 0; i < production.objects().count; i++) {
   const object = production.objects().get(i), geometry = object.geometry();
   if (geometry.objectType === rhino.ObjectType.Mesh) {
@@ -1788,6 +1793,105 @@ assert.equal($('import-info').getAttribute('popover'),'');
 assert.equal($('export-info').getAttribute('popover'),'');
 assert.match($('export-info').textContent,/BlockEdit/);
 assert.match($('import-info').textContent,/coplanar/);
+
+// Synthetic worker diagnostics keep this regression independent of private
+// source geometry while exercising the same completed-result UI and export path.
+const outlineFailure = 'The fitted outline crosses itself. Move its centre or use smaller cells.';
+const solidFailure = 'The thickness or edge rounding makes an outline cross itself.';
+alterNextFitReply = result => {
+  const outline = result.cells[0], solidOnly = result.cells[1];
+  outline.valid = false; outline.issues = [outlineFailure];
+  result.stats.invalidCellCount = 1;
+  result.solids = result.solids.map(solid => solid.id === outline.id || solid.id === solidOnly.id
+    ? { ...solid, valid: false, positions: [], triangles: [], issues: [solid.id === outline.id
+      ? 'Reshape this cell before making a solid panel.' : solidFailure] }
+    : solid);
+};
+await openStudy({ ...cornerStudy, name: 'repair-diagnostic-fixture' }, 'unresolved diagnostic fixture');
+const outlineId = state.cells[0].id, solidOnlyId = state.cells[1].id;
+const problemButton = id => $('panel-problem-list').querySelector(`[data-panel-id="${id}"]`);
+assert.equal($('export-rhino').disabled, true, 'production export stays blocked by unresolved geometry');
+assert.equal($('export-rhino-repair').disabled, false, 'explicit repair export accepts a completed unresolved result');
+assert.equal($('export-repair-shortcut').disabled, false);
+assert.match($('export-availability').textContent, /2 panels unresolved/);
+assert.equal($('panel-problem-count').textContent, '2');
+for (const view of ['surface', 'flat', 'solid', 'reference']) {
+  document.querySelector(`[data-view="${view}"]`).click();
+  assert.equal($('panel-problems').hidden, false, `${view} keeps panel diagnoses visible`);
+  assert.equal($('panel-problem-list').querySelectorAll('[data-panel-id]').length, 2);
+  assert.ok($('panel-problem-list').textContent.includes(outlineFailure));
+  assert.ok($('panel-problem-list').textContent.includes(solidFailure));
+}
+problemButton(outlineId).click();
+assert.equal(state.selected, outlineId); assert.equal(state.view, 'flat');
+assert.equal(problemButton(outlineId).getAttribute('aria-pressed'), 'true');
+assert.ok($('selected-note').textContent.includes(outlineFailure), 'outline selection explains its actual fitting failure');
+assert.ok(!$('selected-note').textContent.includes('Reshape this cell before making a solid panel.'), 'generic downstream rejection does not obscure the original reason');
+problemButton(solidOnlyId).click();
+assert.equal(state.selected, solidOnlyId); assert.equal(state.view, 'solid');
+assert.equal(problemButton(solidOnlyId).getAttribute('aria-pressed'), 'true');
+assert.ok($('selected-note').textContent.includes(solidFailure), 'solid selection explains its separate thickness failure');
+
+const repairDownloadCount = downloads.length;
+clickControl('export-rhino-repair');
+await until(() => downloads.length > repairDownloadCount, 'explicit native repair download');
+assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair.3dm');
+assert.equal(rhinoExports.at(-1).operation, 'repair-export');
+assert.deepEqual(rhinoExports.at(-1).sourceCells, state.result.surfaceCells, 'repair receives original source patches for missing solids');
+const repairFile = rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
+try {
+  assert.equal(repairFile.archiveVersion, 60);
+  assert.equal(repairFile.instanceDefinitions().count, state.cells.length, 'repair retains every panel');
+  const references = [];
+  for (let i = 0; i < repairFile.objects().count; i++) {
+    const object = repairFile.objects().get(i), geometry = object.geometry();
+    if (geometry.objectType === rhino.ObjectType.InstanceReference) references.push({ geometry, attributes: object.attributes() });
+  }
+  assert.equal(references.length, state.cells.length * 2, 'repair has assembly and inspection instances for every panel');
+  for (let i = 0; i < repairFile.instanceDefinitions().count; i++) {
+    const definition = repairFile.instanceDefinitions().get(i), pair = references.filter(ref => ref.geometry.parentIdefId === definition.id);
+    assert.equal(pair.length, 2, `${definition.name} retains its shared block definition`);
+    assert.deepEqual(pair.map(ref => ref.attributes.getUserString('panel-workbench-placement')).sort(), ['assembly', 'repair-layout']);
+    const panel = state.cells[i], unresolved = panel.id === outlineId || panel.id === solidOnlyId;
+    assert.ok(pair.every(ref => ref.attributes.getUserString('panel-workbench-status') === (unresolved ? 'unresolved' : 'resolved')));
+    if (unresolved) {
+      assert.ok(pair.every(ref => ref.attributes.getUserString('panel-workbench-representation') === 'source-patch'));
+      const source = state.result.surfaceCells.find(cell => cell.id === panel.id);
+      const members = definition.getObjectIds().map(id => repairFile.objects().findId(id));
+      const mesh = members.map(object => object.geometry()).find(geometry => geometry.objectType === rhino.ObjectType.Mesh);
+      assert.equal(mesh.vertices().count, source.positions.length, 'empty solid exports the available source patch without invented thickness');
+      assert.equal(mesh.faces().count, source.triangles.length);
+      const issueKey = panel.id === outlineId ? 'panel-workbench-flat-issues' : 'panel-workbench-solid-issues';
+      assert.ok(pair.every(ref => JSON.parse(ref.attributes.getUserString(issueKey)).includes(panel.id === outlineId ? outlineFailure : solidFailure)));
+    }
+  }
+} finally { repairFile.delete(); }
+const shortcutDownloadCount = downloads.length;
+clickControl('export-repair-shortcut');
+await until(() => downloads.length > shortcutDownloadCount, 'diagnostic panel repair shortcut');
+assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair.3dm');
+
+const repairRevision = state.revision, repairExportCount = rhinoExports.length, pendingDownloads = downloads.length, repairFitCount = heldFitReplies.length;
+holdNextFitReply = true;
+input('thickness', state.thickness + 5);
+for (const id of ['export-rhino-repair', 'export-repair-shortcut']) {
+  assert.equal($(id).disabled, true, `${id} waits for the current calculation despite the validity override`);
+  $(id).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+}
+assert.match($('export-availability').textContent, /Wait for the current panel calculation/);
+input('thickness', state.thickness, 'change');
+await until(() => heldFitReplies.length > repairFitCount, 'hold repair recalculation');
+assert.equal(rhinoExports.length, repairExportCount, 'repair override cannot start an export of stale geometry');
+assert.equal(downloads.length, pendingDownloads);
+heldFitReplies[repairFitCount].deliver();
+await until(() => state.revision > repairRevision && state.solved, 'resolve diagnostic fixture');
+assert.equal($('panel-problems').hidden, true, 'resolved recalculation clears the problem list');
+assert.equal($('panel-problem-list').children.length, 0);
+assert.match($('export-availability').textContent, /All panels resolved/);
+assert.equal($('export-rhino').disabled, false);
+assert.equal($('export-rhino-repair').disabled, false);
+console.log('PASS unresolved panel reasons, inspection selection, native repair blocks, and pending-solve export guards');
+
 const incoming=new rhino.File3dm();incoming.settings().modelUnitSystem=rhino.UnitSystem.Centimeters;
 const curve=new rhino.PolylineCurve([[0,0,0],[120,0,0],[120,120,0],[0,120,0],[0,0,0]]),cadAttrs=new rhino.ObjectAttributes();
 incoming.objects().add(curve,cadAttrs);

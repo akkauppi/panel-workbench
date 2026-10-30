@@ -130,6 +130,47 @@ test('roundover shrinks to a valid inset at a narrow corner and reports the actu
   assert.ok(volume(solid) > 0);
 });
 
+test('roundover fallback validates the complete mesh when short side strips collapse', () => {
+  // Synthetic square with one almost-collinear, very short boundary segment.
+  // Its rounded outlines are valid, but the resulting side strips contain
+  // collapsed triangles even at the edge-length radius cap.
+  const panel = cell(0, [[0, 0, 0], [.0001, -1e-8, 0], [100, 0, 0], [100, 100, 0], [0, 100, 0]]);
+  const [unrounded] = buildPanelSolids([panel], { thickness: 40, radius: 0 });
+  const [solid] = buildPanelSolids([panel], { thickness: 40, radius: 2 });
+  assert.equal(unrounded.valid, true, unrounded.issues.join('; '));
+  assert.equal(solid.valid, true, solid.issues.join('; '));
+  assert.equal(solid.requestedRadius, 2);
+  assert.equal(solid.actualRadius, 0);
+  assert.equal(solid.radiusClamped, true);
+  assert.equal(solid.thickness, 40);
+  assert.deepEqual(solid.positions, unrounded.positions, 'fallback preserves the unrounded stock');
+  assert.deepEqual(solid.triangles, unrounded.triangles);
+  closed(solid);
+  for (const t of solid.triangles) {
+    assert.ok(Math.hypot(...cross(sub(solid.positions[t[1]], solid.positions[t[0]]), sub(solid.positions[t[2]], solid.positions[t[0]]))) >= 1e-9);
+  }
+  assert.equal(solid.caps.positive.boundaryLoops[0].length, panel.flatPositions.length);
+  assert.match(exportSolidsSTL([solid]), /^solid panels_mm/);
+});
+
+test('roundover fallback does not turn invalid unrounded stock into a valid solid', () => {
+  const angle = Math.PI / 3, c = Math.cos(angle), s = Math.sin(angle);
+  const panels = [
+    cell(0, [[-100, 0, 0], [0, 0, 0], [0, 100, 0], [-100, 100, 0]]),
+    cell(1, [[0, 0, 0], [100 * c, 0, 100 * s], [100 * c, 100, 100 * s], [0, 100, 0]], undefined,
+      { origin: [0, 0, 0], u: [c, 0, s], v: [0, 1, 0], normal: [-s, 0, c] }),
+  ];
+  const unrounded = buildPanelSolids(panels, { thickness: 400, radius: 0 });
+  const rounded = buildPanelSolids(panels, { thickness: 400, radius: 2 });
+  for (let i = 0; i < panels.length; i++) {
+    assert.equal(unrounded[i].valid, false);
+    assert.equal(rounded[i].valid, false);
+    assert.deepEqual(rounded[i].issues, unrounded[i].issues);
+    assert.equal(rounded[i].positions.length, 0);
+  }
+  assert.throws(() => exportSolidsSTL(rounded), /valid solid panels/);
+});
+
 test('invalid cells cannot silently become exportable solids', () => {
   const bad = cell(0, [[0, 0, 0], [10, 0, 0], [10, 10, 0]]); bad.valid = false;
   const result = buildPanelSolids([bad], { thickness: 20 });

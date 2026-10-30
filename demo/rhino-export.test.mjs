@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadRhino } from './rhino-runtime.js';
-import { buildProductionLayout, exportProduction3DM } from './rhino-export.js';
+import { buildProductionLayout, exportProduction3DM, buildRepairLayout, exportRepair3DM } from './rhino-export.js';
 import { buildPanelSolids } from './solids.js';
 import { buildCarvedPanels } from './carving.js';
 
@@ -74,6 +74,7 @@ test('native 3dm has one definition and two named references per part with share
   assert.ok(bytes instanceof Uint8Array && bytes.length > 1000);
   const file = rhino.File3dm.fromByteArray(bytes);
   try {
+    assert.equal(file.archiveVersion, 60, 'production geometry and shared blocks are written for Rhino 6');
     assert.equal(file.settings().modelUnitSystem, rhino.UnitSystem.Millimeters);
     assert.equal(file.instanceDefinitions().count, cells.length);
     const refs = references(file);
@@ -105,6 +106,114 @@ test('native 3dm has one definition and two named references per part with share
     }
     assert.deepEqual(new Set(refs.map(ref => file.layers().get(ref.attributes.layerIndex).name)), new Set(['Assembly', 'Flat layout']));
   } finally { file.delete(); }
+});
+
+function repairFixture() {
+  const {cells,solids}=folded();
+  const failedCell=cell(42,[[200,0,3],[300,100,7],[200,100,-2],[300,0,9]]);
+  failedCell.valid=false;failedCell.issues=['Fitted outline crosses itself.','Panel exceeds planarity tolerance.'];
+  const source={id:42,positions:[[200,0,0],[300,0,8],[300,100,16],[200,100,3],[250,50,30]],triangles:[[0,1,4],[1,2,4],[2,3,4],[3,0,4]]};
+  return {cells:[cells[0],{...cells[1],issues:[]},failedCell],
+    solids:[solids[0],{...solids[1],valid:false,carved:true,issues:['Carved mesh exceeds available stock.']},
+      {id:42,valid:false,positions:[],triangles:[],issues:['Could not build solid from crossing outline.']}],sourceCells:[source]};
+}
+
+test('repair layout preserves every panel and its original candidate or source geometry with rigid inspection placements',()=>{
+  const input=repairFixture(),before=structuredClone(input);
+  for(const up of ['y','z']) {
+    const layout=buildRepairLayout(input.cells,input.solids,input.sourceCells,{up,spacing:37,rowWidth:110});
+    assert.deepEqual(layout.parts.map(p=>p.name),['P004','P018','P043']);
+    assert.deepEqual(layout.parts.map(p=>p.status),['resolved','unresolved','unresolved']);
+    assert.deepEqual(layout.parts.map(p=>p.representation),['full-part','solid-candidate','source-patch']);
+    const originals=[input.solids[0],input.solids[1],input.sourceCells[0]];
+    layout.parts.forEach((part,i)=>{
+      assert.deepEqual(part.triangles,originals[i].triangles);
+      part.positions.forEach((p,j)=>closePoint(apply(part.assembly,p),toRhino(originals[i].positions[j],up),'repair preserves assembled geometry',1e-9));
+      const inspection=box([...part.positions,...part.outlines.flatMap(outline=>outline.points)].map(p=>apply(part.repairLayout,p)));
+      close(inspection.min[2],0,'inspection geometry is rigidly placed above bed');
+      assert.ok(inspection.min[0]>=layout.assemblyBounds.max[0]+37-1e-7);
+    });
+    const fallback=layout.parts[2];
+    assert.ok(fallback.bounds.max[2]>20,'curved source patch remains curved in inspection layout');
+    fallback.outlines[0].points.forEach((p,j)=>closePoint(apply(fallback.assembly,p),toRhino(input.cells[2].flatPositions[j],up),'invalid candidate curve retains 3D coordinates',1e-9));
+    assert.deepEqual(fallback.flatIssues,input.cells[2].issues);
+    assert.deepEqual(fallback.solidIssues,input.solids[2].issues);
+    assert.ok(fallback.notes.some(note=>/without invented thickness or carving/.test(note)));
+  }
+  assert.deepEqual(input,before,'repair export cannot alter the active model');
+  assert.throws(()=>exportProduction3DM(input.cells,input.solids,rhino),/resolved/,'production remains strict');
+});
+
+test('Rhino 6 repair file roundtrips all definitions, shared references, diagnostics, original meshes and crossing candidate curves',()=>{
+  const input=repairFixture(),planned=buildRepairLayout(input.cells,input.solids,input.sourceCells,{up:'y'});
+  const file=rhino.File3dm.fromByteArray(exportRepair3DM(input.cells,input.solids,input.sourceCells,rhino,{up:'y',carved:true}));
+  try {
+    assert.equal(file.archiveVersion,60);assert.equal(file.settings().modelUnitSystem,rhino.UnitSystem.Millimeters);
+    assert.equal(file.instanceDefinitions().count,3);
+    const refs=references(file);assert.equal(refs.length,6);
+    for(let i=0;i<3;i++) {
+      const definition=file.instanceDefinitions().get(i),part=planned.parts[i];
+      assert.equal(definition.name,part.name);
+      assert.equal(definition.getUserString('panel-workbench-status'),part.status);
+      assert.equal(definition.getUserString('panel-workbench-representation'),part.representation);
+      assert.deepEqual(JSON.parse(definition.getUserString('panel-workbench-flat-issues')),part.flatIssues);
+      assert.deepEqual(JSON.parse(definition.getUserString('panel-workbench-solid-issues')),part.solidIssues);
+      const pair=refs.filter(ref=>ref.geometry.parentIdefId===definition.id);
+      assert.deepEqual(pair.map(ref=>ref.attributes.getUserString('panel-workbench-placement')).sort(),['assembly','repair-layout']);
+      for(const ref of pair) {
+        assert.equal(ref.attributes.name,part.name);
+        assert.equal(ref.attributes.getUserString('panel-workbench-export'),'repair');
+        assert.equal(ref.attributes.getUserString('panel-workbench-status'),part.status);
+      }
+      const members=definitionGeometry(file,definition);
+      for(const member of members) {
+        for(const target of [member.geometry,member.attributes]) {
+          assert.equal(target.getUserString('panel-workbench-representation'),part.representation);
+          assert.deepEqual(JSON.parse(target.getUserString('panel-workbench-solid-issues')),part.solidIssues);
+          assert.deepEqual(JSON.parse(target.getUserString('panel-workbench-flat-issues')),part.flatIssues);
+        }
+      }
+      const mesh=members.find(member=>member.geometry.objectType===rhino.ObjectType.Mesh);
+      assert.equal(file.layers().get(mesh.attributes.layerIndex).name,part.status==='resolved'?'Resolved parts':'Unresolved parts');
+      const instance=pair.find(ref=>ref.attributes.getUserString('panel-workbench-placement')==='assembly');
+      const original=i===2?input.sourceCells[0]:input.solids[i];
+      assert.equal(mesh.geometry.faces().count,original.triangles.length);
+      for(let j=0;j<mesh.geometry.vertices().count;j++)closePoint(apply(matrix(instance.geometry.xform),mesh.geometry.vertices().point3dAt(j)),toRhino(original.positions[j],'y'),'native repair vertex',1e-9);
+      if(i===2) {
+        const curve=members.find(member=>member.geometry.objectType===rhino.ObjectType.Curve);
+        assert.equal(curve.geometry.isClosed,true);
+        assert.match(curve.attributes.getUserString('purpose'),/may cross/);
+        assert.equal(mesh.attributes.getUserString('panel-workbench-carved'),'false','source fallback is not labelled as carved');
+        assert.equal(mesh.attributes.getUserString('panel-workbench-carving-requested'),'true');
+        for(let j=0;j<4;j++)closePoint(apply(matrix(instance.geometry.xform),curve.geometry.point(j)),toRhino(input.cells[2].flatPositions[j],'y'),'native candidate curve',1e-9);
+      }
+    }
+  } finally {file.delete();}
+});
+
+test('repair can derive a frame from a source triangle and reports unusable outline loops without dropping the panel',()=>{
+  const source={id:9,positions:[[10,20,30],[20,20,32],[20,30,36]],triangles:[[0,1,2]]};
+  const cells=[{id:9,valid:false,issues:['No fitted plane.'],plane:{origin:[NaN,0,0]},flatPositions:[[NaN,0,0]],loops:[[0,1,2]]}];
+  const layout=buildRepairLayout(cells,[],[source],{up:'z'});
+  assert.equal(layout.parts.length,1);assert.equal(layout.parts[0].outlines.length,0);
+  assert.ok(layout.parts[0].notes.some(note=>/outline 1/.test(note)));
+  layout.parts[0].positions.forEach((p,i)=>closePoint(apply(layout.parts[0].assembly,p),source.positions[i],'derived source frame',1e-9));
+  const file=rhino.File3dm.fromByteArray(exportRepair3DM(cells,[],[source],rhino));
+  assert.equal(file.instanceDefinitions().count,1);file.delete();
+});
+
+test('repair never silently drops missing or malformed panels and diagnoses a malformed candidate before source fallback',()=>{
+  const input=repairFixture();
+  assert.throws(()=>buildRepairLayout(input.cells,input.solids,[]),/P043.*No panel was silently omitted/);
+  assert.throws(()=>buildRepairLayout(input.cells,input.solids,[{...input.sourceCells[0],triangles:[[0,1,99]]}]),/Source patch.*invalid triangle/);
+  assert.throws(()=>buildRepairLayout([...input.cells,input.cells[0]],input.solids,input.sourceCells),/unique/);
+  assert.throws(()=>buildRepairLayout(input.cells,input.solids,input.sourceCells,{up:'x'}),/vertical axis/);
+  const source={id:3,positions:[[0,0,0],[1,0,0],[0,1,0]],triangles:[[0,1,2]]};
+  const malformed={...input.solids[0],positions:[[NaN,0,0]],triangles:[[0,0,0]]};
+  const layout=buildRepairLayout([input.cells[0]],[malformed],[source]);
+  assert.equal(layout.parts[0].representation,'source-patch');
+  assert.equal(layout.parts[0].status,'unresolved');
+  assert.ok(layout.parts[0].notes.some(note=>/non-finite/.test(note)));
 });
 
 test('closed cutting curves preserve inner openings in the shared panel definition', () => {

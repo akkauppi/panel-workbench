@@ -302,7 +302,7 @@ export function parse3DM(bytes, rhino) {
       let geometry;
       try {
         if (!attributes.visible || !layerVisible(attributes.layerIndex) || sameEnum(attributes.activeSpace, rhino.ActiveSpace.PageSpace)) return;
-        if (attributes.getUserString('panel-workbench-placement') === 'flat') { skippedFlat++; return; }
+        if (['flat', 'repair-layout'].includes(attributes.getUserString('panel-workbench-placement'))) { skippedFlat++; return; }
         geometry = object.geometry();
         if (!geometry) throw new Error('The Rhino file contains an unreadable object.');
         const type = geometry.objectType, label = attributes.name || 'A Rhino surface';
@@ -376,7 +376,7 @@ export function parse3DM(bytes, rhino) {
     } else if (curves.length) warnings.push(`Ignored ${curves.length} curve object(s); imported the visible surfaces.`);
     if (!result.triangles.length) throw new Error('The Rhino file contains no usable visible surfaces or closed planar outlines. Export the shell mesh or closed outlines from Rhino.');
     if (ignored) warnings.push(`Ignored ${ignored} non-surface object(s), such as points, annotations or lights.`);
-    if (skippedFlat) warnings.push(`Skipped ${skippedFlat} flat panel placement(s); imported the assembled model.`);
+    if (skippedFlat) warnings.push(`Skipped ${skippedFlat} flat or repair-layout placement(s); imported the assembled model.`);
     if (skippedFaces) warnings.push(`Skipped ${skippedFaces} degenerate mesh triangle(s).`);
     return { ...result, name, warnings, units: 'mm', sourceUnits: units.name, originalFaceCount: faces || result.triangles.length, skippedFaces, ...(curveToleranceMm ? { curveToleranceMm } : {}) };
   } finally { release(settings); release(objects); release(definitions); release(layers); release(doc); }

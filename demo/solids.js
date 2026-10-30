@@ -360,29 +360,10 @@ function topology(positions, triangles) {
   return null;
 }
 
-function buildOne(panel, thickness, requestedRadius, segments, roundoverSide) {
-  let radius = Math.min(requestedRadius, thickness / 2, panel.minEdge * 0.2);
-  const profile = value => {
-    const slices = levels(thickness, value, segments, roundoverSide);
-    const rings = slices.map(level => { const result = slice(panel, level.z, level.inset); checkRings(result); return result; });
-    return { slices, rings };
-  };
-  let shape;
-  try { shape = profile(radius); }
-  catch {
-    // Thickness must work on its own. Only the optional edge treatment may
-    // shrink: short, shallow corners can cross even below the edge-length cap.
-    shape = profile(0);
-    let low = 0, high = radius;
-    for (let i = 0; i < 18; i++) {
-      const middle = (low + high) / 2;
-      try { const candidate = profile(middle); low = middle; shape = candidate; }
-      catch { high = middle; }
-    }
-    radius = low;
-    if (radius < 1e-6) { radius = 0; shape = profile(0); }
-  }
-  const { slices, rings: sliceRings } = shape, positions = [], triangles = [], triangleGroups = [], trianglePatches = [];
+function buildAtRadius(panel, thickness, radius, requestedRadius, segments, roundoverSide) {
+  const slices = levels(thickness, radius, segments, roundoverSide);
+  const sliceRings = slices.map(level => { const rings = slice(panel, level.z, level.inset); checkRings(rings); return rings; });
+  const positions = [], triangles = [], triangleGroups = [], trianglePatches = [];
   const ringOffsets = [], ringVertexCount = panel.rings.reduce((n, r) => n + r.xy.length, 0);
   let offset = 0;
   for (const ring of panel.rings) { ringOffsets.push(offset); offset += ring.xy.length; }
@@ -438,6 +419,27 @@ function buildOne(panel, thickness, requestedRadius, segments, roundoverSide) {
     valid: true, issues: [], actualRadius: radius, requestedRadius, radiusClamped: radius + EPS < requestedRadius,
     thickness, roundoverSide, maxJointMismatch: 0, cuts: panel.cuts, planarityError: panel.planarity,
     cornerAnchors, _envelope: envelope, _rings: panel.rings };
+}
+
+function buildOne(panel, thickness, requestedRadius, segments, roundoverSide) {
+  const radius = Math.min(requestedRadius, thickness / 2, panel.minEdge * 0.2);
+  const build = value => buildAtRadius(panel, thickness, value, requestedRadius, segments, roundoverSide);
+  try { return build(radius); }
+  catch (error) {
+    if (radius === 0) throw error;
+    // Thickness must work on its own. Validate the complete unrounded mesh
+    // before reducing only the optional rounding; a bad base still fails.
+    const unrounded = build(0);
+    let low = 0, high = radius, best = unrounded;
+    for (let i = 0; i < 18; i++) {
+      const middle = (low + high) / 2;
+      // A valid outline is insufficient: cap triangulation and side strips
+      // can still collapse. Retain only fully validated candidate meshes.
+      try { const candidate = build(middle); low = middle; best = candidate; }
+      catch { high = middle; }
+    }
+    return low < 1e-6 ? unrounded : best;
+  }
 }
 
 /**

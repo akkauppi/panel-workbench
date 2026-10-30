@@ -83,16 +83,18 @@ test('mirror instances reverse triangle winding while preserving reflected posit
   assert.ok((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0);
 });
 
-test('workbench flat copies are excluded, ordinary additional block instances remain', () => {
+test('workbench flat and repair-layout copies are excluded, ordinary additional block instances remain', () => {
   const doc = document(), id = definition(doc, 'Panel', mesh());
   const assembly = attributes(); assembly.setUserString('panel-workbench-placement', 'assembly');
   const flat = attributes(); flat.setUserString('panel-workbench-placement', 'flat');
-  instance(doc, id, {}, assembly); instance(doc, id, { m03: 100 }, flat); instance(doc, id, { m03: 200 });
+  const repair = attributes(); repair.setUserString('panel-workbench-placement', 'repair-layout');
+  instance(doc, id, {}, assembly); instance(doc, id, { m03: 100 }, flat); instance(doc, id, { m03: 200 }); instance(doc, id, { m03: 300 }, repair);
   const result = read(doc);
   assert.equal(result.triangles.length, 2);
   assert.ok(result.vertices.some(point => point[0] === 200));
   assert.ok(!result.vertices.some(point => point[0] === 100));
-  assert.match(result.warnings.join(' '), /Skipped 1 flat/);
+  assert.ok(!result.vertices.some(point => point[0] === 300));
+  assert.match(result.warnings.join(' '), /Skipped 2 flat or repair-layout/);
 });
 
 test('hidden objects, hidden ancestor layers and paper-space geometry are excluded', () => {

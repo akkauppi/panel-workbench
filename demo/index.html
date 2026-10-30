@@ -264,6 +264,7 @@
         <div class="ribbon-group export-section">
           <div class="ribbon-group-content">
             <button id="export-rhino" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Rhino production <span class="file-type">3DM</span></button>
+            <button id="export-rhino-repair" class="ribbon-command ribbon-large" type="button" aria-describedby="export-availability"><svg><use href="#i-download"></use></svg>Rhino repair <span class="file-type">3DM</span></button>
             <button id="export-obj" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>3D panels <span class="file-type">OBJ</span></button>
             <button id="export-stl" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Solid panels <span class="file-type">STL</span></button>
             <button id="export-dxf" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Flat outlines <span class="file-type">DXF</span></button>
@@ -296,7 +297,7 @@
           <div class="ribbon-group-content">
             <div class="fabrication-note">
               <svg><use href="#i-info"></use></svg>
-              <p>Shared seams are fitted together. Review panel geometry before fabrication.</p>
+              <p id="export-availability" aria-live="polite">Calculate panels to see export availability.</p>
             </div>
           </div>
           <div class="ribbon-group-caption">Fabrication</div>
@@ -335,7 +336,8 @@
     <div id="export-info" class="format-info" popover role="note" aria-labelledby="export-info-title">
       <button class="info-close" type="button" popovertarget="export-info" popovertargetaction="hide" aria-label="Close export information">×</button>
       <h2 id="export-info-title">What objects are exported?</h2>
-      <p><strong>Rhino production .3dm (Rhino 7/8):</strong> one named block definition per panel, such as P001. Each contains the full panel mesh and closed nominal outline curves. Two instances share it: one assembled, one lying flat beside the assembly with its bottom at Z = 0.</p>
+      <p><strong>Rhino production .3dm (Rhino 6/7/8):</strong> one named block definition per panel, such as P001. Each contains the full panel mesh and closed nominal outline curves. Two instances share it: one assembled, one lying flat beside the assembly with its bottom at Z = 0.</p>
+      <p><strong>Rhino repair .3dm:</strong> explicitly includes unresolved panels. Usable solid candidates are retained; where no solid exists, the source surface patch and available fitted outline candidates are included. Panel IDs and failure reasons are stored as object user text. The second set is arranged for inspection and may contain curved surfaces, zero-thickness meshes or crossing outlines. Repair and check these parts in Rhino before fabrication.</p>
       <p><strong>Your selected geometry:</strong> thickness, mitres and rounding are retained. Carving is included only when enabled. Flat placement keeps the full thickness. These are meshes inside genuine Rhino blocks, not reconstructed smooth NURBS solids.</p>
       <p><strong>Linked editing:</strong> Rhino BlockEdit updates both instances. Moving an instance changes only that placement. Editing an outline curve does not rebuild the panel mesh or its bevels.</p>
       <p><strong>Production preparation:</strong> rows provide spacing, not sheet nesting. Outlines are nominal panel boundaries, not bevel envelopes or compensated cutter paths. Check stock, orientation and tool access, then create toolpaths in CAM.</p>
@@ -483,6 +485,15 @@
                 </div>
                 <p id="boundary-note" class="boundary-note"><span class="boundary-dot"></span>Source openings preserved</p>
                 <p class="fit-explanation">Surface deviation measures the distance between fitted panels and the source mesh.</p>
+              </div>
+            </details>
+            <details id="panel-problems" class="property-section panel-problems" open="" hidden="">
+              <summary>Panels to resolve <span id="panel-problem-count" class="group-scope"></span></summary>
+              <div class="health-body">
+                <p id="panel-problem-summary" class="control-hint"></p>
+                <ul id="panel-problem-list" class="panel-problem-list"></ul>
+                <button id="export-repair-shortcut" class="button" type="button">Export for Rhino repair · 3DM</button>
+                <p class="control-hint">Includes unresolved candidates and their reasons. Full solids are included where available; other panels use source patches and outlines.</p>
               </div>
             </details>
           </div>
