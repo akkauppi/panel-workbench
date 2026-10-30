@@ -2294,6 +2294,7 @@ assert.equal(new Set([...expectedOffsets.values()].map(offset => JSON.stringify(
 const ghost = assemblyGuides().filter(object => object.userData.assemblyGuide === 'assembled');
 assert.equal(ghost.length, state.cells.length);
 assert.ok(ghost.every(object => object.material.isLineDashedMaterial), 'assembled outline uses dashed lines');
+assert.ok(assemblyGuides().every(object => object.material.depthTest && !object.material.depthWrite), 'all assembly outlines, connectors and markers respect opaque panel depth without hiding other guides');
 for (const line of assemblyGuides().filter(object => object.userData.assemblyGuide === 'corners')) {
   const values = line.geometry.attributes.position.array, offset = expectedOffsets.get(line.userData.cellId);
   assert.ok(values.length >= 6);
@@ -2319,10 +2320,12 @@ pointer(canvas, 'pointerdown', clickPoint.x, clickPoint.y); pointer(canvas, 'poi
 assert.equal(state.selected, explodedCell.id);
 assert.ok(assemblyGuides().filter(object => object.userData.assemblyGuide === 'corners').every(object => object.userData.cellId === state.selected), 'selection limits corner connectors');
 assert.equal(assemblyGuides().filter(object => object.userData.assemblyGuide === 'assembled').length, state.cells.length, 'assembled context stays visible');
+const selectedFlatGuideCount = assemblyGuides().filter(object => object.userData.assemblyGuide === 'corners').reduce((sum, line) => sum + line.geometry.attributes.position.count / 2, 0);
 const flatOffsets = displayedMeshes().map(mesh => [mesh.userData.cellId, mesh.position.toArray()]);
 document.querySelector('[data-view="solid"]').click();
 assert.deepEqual(displayedMeshes().map(mesh => [mesh.userData.cellId, mesh.position.toArray()]), flatOffsets, 'view changes preserve placement');
-assert.ok(assemblyGuides().some(object => object.userData.assemblyGuide === 'corners'), 'solid guides follow actual cap boundary corners');
+assert.ok(assemblyGuides().some(object => object.userData.assemblyGuide === 'corners'), 'solid guides follow nominal joint corners');
+assert.equal(assemblyGuides().filter(object => object.userData.assemblyGuide === 'corners').reduce((sum, line) => sum + line.geometry.attributes.position.count / 2, 0), selectedFlatGuideCount, 'solid guides use one anchor per logical corner, without doubling the cap vertices');
 input('explode', 0); input('explode', 0, 'change');
 assert.deepEqual(currentDesign(), beforeExplosion);
 assert.deepEqual(state.project, explosionProject, 'presentation controls never advance the project revision');

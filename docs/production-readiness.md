@@ -22,6 +22,9 @@ changes must be visible through the saved calculation comparison and current
 validation. Unsupported required features must be reported before replacing live
 work.
 
+For an illustrated explanation of the calculation and its complexity, read
+[From a shell to buildable panels](how-panels-are-fitted.md).
+
 ## What each result establishes
 
 | Stage | What is checked | What it does not establish |
@@ -136,9 +139,14 @@ all exploded parts; **Fit view** also uses their current positions.
 Optional **Assembly guides** draw dashed outlines at the actual assembled
 positions of the current representation: source boundaries in Cells, fitted
 boundaries in Flat, and physical cap boundaries in Solid. Connecting lines and
-endpoint markers link corresponding boundary corners to their exploded positions.
-Straight-segment samples are omitted from the connectors. Selecting parts limits
-the connectors to that selection while retaining the assembled outlines.
+endpoint markers link logical cell corners to their exploded positions.
+Logical shared junctions and sharp fixed perimeter turns are retained;
+intermediate mesh/curve samples are omitted. Because meshes have no CAD curve
+semantics, a fixed perimeter turn of at least 30° is the conservative corner
+fallback. Solid views use one nominal joint anchor per owner, not both cap meshes
+or roundover samples. All assembly outlines, connectors and markers obey depth
+testing, so opaque parts hide guides behind them. Selecting parts limits the
+connectors to that selection while retaining the assembled outlines.
 
 Whole-model OBJ/STL and selected-part OBJ exports use the same per-panel offsets
 as the view. Exporting a selected part does not recompute a different explosion

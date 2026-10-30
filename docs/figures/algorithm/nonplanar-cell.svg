@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+  <title id="title">Four source corners need not belong to one plane</title>
+  <desc id="desc">The first diagram shows four corners on a curved source patch. A, B and C define a reference plane, while D is above it. A single planar panel must adjust corner positions within permitted limits. Splitting the same corners into two triangles retains them but introduces a diagonal and two planar faces, changing the part concept. The drawing is schematic and does not promise either option is feasible.</desc>
+  <defs>
+    <marker id="move" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#ae650b"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #233044; }
+      .heading { font-size: 26px; font-weight: 700; }
+      .stage { font-size: 20px; font-weight: 700; }
+      .body { font-size: 17px; }
+      .small { font-size: 14px; fill: #536174; }
+      .letter { font-size: 16px; font-weight: 700; }
+      .source { stroke: #176ea7; stroke-width: 2.5; stroke-linejoin: round; }
+      .fitted { stroke: #7450a1; stroke-width: 2.5; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <rect width="1200" height="440" fill="#fff"/>
+  <text class="heading" x="32" y="39">Four corners are not necessarily one flat panel</text>
+  <text class="small" x="32" y="64">Schematic · a fourth point is not constrained to the plane through the first three</text>
+  <path d="M397 92V375 M797 92V375" stroke="#dce2e9" stroke-width="1.5"/>
+
+  <g transform="translate(24 0)">
+    <text class="stage" x="0" y="106">A curved source cell</text>
+    <polygon points="70,205 280,205 300,295 90,295" fill="#f1ebf8" stroke="#7450a1" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <path class="source" fill="#deeff9" fill-opacity=".78" d="M90 295Q190 265 300 295L280 205Q170 150 70 145Q65 225 90 295Z"/>
+    <path d="M90 295L280 205" stroke="#7450a1" stroke-width="1.4" stroke-dasharray="5 5"/>
+    <path d="M70 151V198" stroke="#ae650b" stroke-width="2.5" marker-end="url(#move)"/>
+    <circle cx="70" cy="205" r="5" fill="#fff" stroke="#7450a1" stroke-width="2"/>
+    <g fill="#176ea7" stroke="#fff" stroke-width="1.5">
+      <circle cx="90" cy="295" r="5"/><circle cx="300" cy="295" r="5"/><circle cx="280" cy="205" r="5"/><circle cx="70" cy="145" r="5"/>
+    </g>
+    <text class="letter" x="73" y="317">A</text><text class="letter" x="306" y="317">B</text>
+    <text class="letter" x="288" y="202">C</text><text class="letter" x="49" y="142">D</text>
+    <text class="small" x="92" y="182" fill="#ae650b">D is off the plane</text>
+    <text class="small" x="150" y="255">plane through A, B, C</text>
+    <text class="body" x="0" y="354">A, B and C define a plane.</text>
+    <text class="body" x="0" y="377">D does not lie on it.</text>
+  </g>
+
+  <g transform="translate(424 0)">
+    <text class="stage" x="0" y="106">Option: one planar face</text>
+    <polygon class="fitted" fill="#e5d9f0" points="70,205 280,205 300,295 90,295"/>
+    <path d="M70 145Q170 150 280 205" fill="none" stroke="#176ea7" stroke-width="1.7" stroke-dasharray="5 5"/>
+    <circle cx="70" cy="145" r="5" fill="#fff" stroke="#176ea7" stroke-width="2"/>
+    <path d="M70 154V195" stroke="#ae650b" stroke-width="3" marker-end="url(#move)"/>
+    <g fill="#7450a1" stroke="#fff" stroke-width="1.5">
+      <circle cx="90" cy="295" r="5"/><circle cx="300" cy="295" r="5"/><circle cx="280" cy="205" r="5"/><circle cx="70" cy="205" r="5"/>
+    </g>
+    <text class="letter" x="45" y="140">D</text><text class="letter" x="42" y="211">D′</text>
+    <text class="small" x="95" y="175">corner adjustment</text>
+    <text class="small" x="124" y="262">one plane</text>
+    <text class="body" x="0" y="354">Corner positions must be adjusted.</text>
+    <text class="small" x="0" y="377">Shown: D moves; a joint fit may move others.</text>
+  </g>
+
+  <g transform="translate(824 0)">
+    <text class="stage" x="0" y="106">Option: two planar faces</text>
+    <polygon class="fitted" fill="#e9e0f4" points="90,295 300,295 280,205"/>
+    <polygon class="fitted" fill="#cdb9e5" points="90,295 280,205 70,145"/>
+    <path d="M90 295L280 205" stroke="#7450a1" stroke-width="4"/>
+    <g fill="#176ea7" stroke="#fff" stroke-width="1.5">
+      <circle cx="90" cy="295" r="5"/><circle cx="300" cy="295" r="5"/><circle cx="280" cy="205" r="5"/><circle cx="70" cy="145" r="5"/>
+    </g>
+    <text class="letter" x="73" y="317">A</text><text class="letter" x="306" y="317">B</text>
+    <text class="letter" x="288" y="202">C</text><text class="letter" x="49" y="142">D</text>
+    <text class="small" x="116" y="213">face 1</text><text class="small" x="204" y="277">face 2</text>
+    <path d="M265 249L243 236" fill="none" stroke="#526173" stroke-width="1.5"/>
+    <text class="small" x="270" y="257">new edge</text>
+    <text class="body" x="0" y="354">These corner positions can stay.</text>
+    <text class="small" x="0" y="377">Two planar faces; an extra fold or joint.</text>
+  </g>
+
+  <rect x="24" y="399" width="1152" height="29" rx="5" fill="#fff5e6"/>
+  <text class="small" x="40" y="419">The design choice matters: corner movement changes the shape; adding a face changes the part concept. Both still need validation.</text>
+</svg>

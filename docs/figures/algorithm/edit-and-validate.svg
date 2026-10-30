@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title description">
+  <title id="title">Edit the shell while fabrication checks run in the background</title>
+  <desc id="description">Two parallel tracks separate design decisions from fabrication calculations. Dragging creates a temporary preview of the accepted source layout. On release, source validation either rejects the move and retains the previous layout with a reason, or accepts a new project revision with local recovery. The designer may immediately start the next edit. The latest accepted layout also starts a coupled fit of shared flat panels, followed by stock and optional carving checks. Valid parts allow production export; unresolved parts remain available through repair export and diagnoses. Neither outcome replaces the authored source arrangement. Results from obsolete background calculations are ignored.</desc>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#326ca8"/></marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#a66b14"/></marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#7959a3"/></marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#62717e"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #243344; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 18px; fill: #556474; }
+      .track { font-size: 19px; font-weight: 700; }
+      .card-title { font-size: 20px; font-weight: 700; }
+      .body { font-size: 18px; }
+      .small { font-size: 17px; }
+      .card { stroke-width: 1.8; rx: 12; }
+      .source { fill: #ffffff; stroke: #326ca8; }
+      .check { fill: #fff8e9; stroke: #a66b14; }
+      .fit { fill: #f6f0fc; stroke: #7959a3; }
+      .export { fill: #ffffff; stroke: #75828f; }
+      .line { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="700" fill="#ffffff"/>
+  <text class="title" x="40" y="42">Edit the shell. Check the parts in the background.</text>
+  <text class="subtitle" x="40" y="74">The authored arrangement remains the source; fitted panels are a derived result.</text>
+
+  <rect x="20" y="96" width="1160" height="254" rx="18" fill="#edf5fc"/>
+  <text class="track" x="40" y="128" style="fill:#326ca8">1 · Arrange the shell</text>
+
+  <!-- Source editing and its temporary, reversible preview. -->
+  <rect class="card source" x="40" y="154" width="210" height="108"/>
+  <text text-anchor="middle" x="145" y="184" class="card-title">Accepted source</text>
+  <text text-anchor="middle" x="145" y="212" class="body">Shell + cell layout</text>
+  <text text-anchor="middle" x="145" y="239" class="small">Kept during the drag</text>
+
+  <path class="line" d="M250 208H295" stroke="#326ca8" marker-end="url(#arrow-blue)"/>
+  <rect class="card source" x="295" y="154" width="210" height="108"/>
+  <text text-anchor="middle" x="400" y="184" class="card-title">Drag a point</text>
+  <text text-anchor="middle" x="400" y="212" class="body">Temporary preview</text>
+  <text text-anchor="middle" x="400" y="239" class="small">Escape cancels</text>
+
+  <path class="line" d="M505 208H550" stroke="#326ca8" marker-end="url(#arrow-blue)"/>
+  <rect class="card check" x="550" y="154" width="210" height="108"/>
+  <text text-anchor="middle" x="655" y="184" class="card-title">Release + check</text>
+  <text text-anchor="middle" x="655" y="212" class="body">Seams on the shell</text>
+  <text text-anchor="middle" x="655" y="239" class="small">Is this layout valid?</text>
+
+  <path class="line" d="M760 208H850" stroke="#326ca8" marker-end="url(#arrow-blue)"/>
+  <text class="small" text-anchor="middle" x="805" y="193">Accepted</text>
+  <rect class="card source" x="850" y="154" width="310" height="108"/>
+  <text text-anchor="middle" x="1005" y="184" class="card-title">Keep the new source layout</text>
+  <text text-anchor="middle" x="1005" y="212" class="body">New project revision</text>
+  <text text-anchor="middle" x="1005" y="239" class="body">Save / local recovery</text>
+
+  <!-- This loop does not pass through the fabrication calculation. -->
+  <path class="line" d="M1160 208H1172V112H400V154" stroke="#326ca8" marker-end="url(#arrow-blue)"/>
+  <rect x="638" y="99" width="300" height="26" rx="6" fill="#edf5fc"/>
+  <text class="small" text-anchor="middle" x="788" y="118" style="fill:#326ca8">The next edit can start now</text>
+
+  <path class="line" d="M655 262V286" stroke="#a66b14" marker-end="url(#arrow-amber)"/>
+  <rect class="card check" x="480" y="286" width="320" height="50"/>
+  <text text-anchor="middle" x="640" y="307" class="small" style="font-weight:700">Rejected: show the reason</text>
+  <text text-anchor="middle" x="640" y="327" class="small">Keep the previous source layout</text>
+  <path class="line" d="M480 312H272V226H250" stroke="#a66b14" marker-end="url(#arrow-amber)"/>
+
+  <!-- An accepted source starts a separate background calculation. -->
+  <path class="line" d="M1005 262V369H30V506H40" stroke="#7959a3" marker-end="url(#arrow-purple)"/>
+  <rect x="415" y="355" width="330" height="27" rx="6" fill="#ffffff"/>
+  <text class="small" text-anchor="middle" x="580" y="374" style="fill:#7959a3">Calculate the latest accepted layout</text>
+
+  <rect x="20" y="390" width="1160" height="272" rx="18" fill="#f6f3f9"/>
+  <text class="track" x="40" y="419" style="fill:#7959a3">2 · Check fabrication in the background</text>
+  <!-- Continue the connector over the track background. -->
+  <path class="line" d="M30 390V506H40" stroke="#7959a3" marker-end="url(#arrow-purple)"/>
+
+  <rect class="card fit" x="40" y="450" width="230" height="112"/>
+  <text text-anchor="middle" x="155" y="479" class="card-title">Fit shared panels</text>
+  <text text-anchor="middle" x="155" y="507" class="small">Flat faces + shared seams</text>
+  <text text-anchor="middle" x="155" y="534" class="small">Fitted corners may move</text>
+
+  <path class="line" d="M270 506H325" stroke="#7959a3" marker-end="url(#arrow-purple)"/>
+  <rect class="card check" x="325" y="450" width="230" height="112"/>
+  <text text-anchor="middle" x="440" y="479" class="card-title">Check the real parts</text>
+  <text text-anchor="middle" x="440" y="507" class="small">Thickness + edge details</text>
+  <text text-anchor="middle" x="440" y="534" class="small">Carving, when enabled</text>
+
+  <path class="line" d="M555 506H610" stroke="#a66b14" marker-end="url(#arrow-amber)"/>
+  <rect class="card check" x="610" y="450" width="190" height="112"/>
+  <text text-anchor="middle" x="705" y="485" class="card-title">Usable parts?</text>
+  <text text-anchor="middle" x="705" y="517" class="small">Every panel passes</text>
+  <text text-anchor="middle" x="705" y="541" class="small">the geometry checks</text>
+
+  <path class="line" d="M800 506H827V474H855" stroke="#62717e" marker-end="url(#arrow-gray)"/>
+  <text class="small" text-anchor="middle" x="827" y="453">Yes</text>
+  <rect class="card export" x="855" y="430" width="305" height="86"/>
+  <text text-anchor="middle" x="1007" y="456" class="card-title">Production export</text>
+  <text text-anchor="middle" x="1007" y="482" class="small">Assembled + flat parts</text>
+  <text text-anchor="middle" x="1007" y="505" class="small">With shared panel identities</text>
+
+  <path class="line" d="M827 506V596H855" stroke="#62717e" marker-end="url(#arrow-gray)"/>
+  <rect x="803" y="562" width="48" height="23" fill="#f6f3f9"/>
+  <text class="small" text-anchor="middle" x="827" y="579">Issues</text>
+  <rect class="card export" x="855" y="552" width="305" height="90"/>
+  <text text-anchor="middle" x="1007" y="579" class="card-title">Repair export + diagnoses</text>
+  <text text-anchor="middle" x="1007" y="605" class="small">Inspect the unresolved parts</text>
+  <text text-anchor="middle" x="1007" y="629" class="small">The source stays editable</text>
+
+  <rect x="40" y="591" width="760" height="51" rx="9" fill="#ffffff" stroke="#a3aab4" stroke-dasharray="5 4"/>
+  <text text-anchor="middle" x="420" y="612" class="small" style="font-weight:700">A newer edit can replace the calculation in progress.</text>
+  <text text-anchor="middle" x="420" y="634" class="small">Late results for an older layout are ignored.</text>
+
+  <text class="small" text-anchor="middle" x="600" y="687" style="fill:#556474">Local recovery is browser storage. Download a study file to keep a portable copy.</text>
+</svg>

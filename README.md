@@ -17,12 +17,14 @@ Select one cell and choose **Divide cell**. Drag a line inside it to set a divid
 **Explode panels** spreads parts using their positions, sizes and outward
 directions, including adjoining coplanar panels. Release the slider to frame the
 spread. Optional **Assembly guides** show dashed assembled outlines and lines
-between corresponding boundary corners; select panels to limit the connecting
-lines. Placement stays consistent across Cells, Flat and Solid views. OBJ/STL
+between logical cell corners. Intermediate curved-edge samples are omitted,
+and parts hide guides behind them. Select panels to limit the connecting lines. Placement stays consistent across Cells, Flat and Solid views. OBJ/STL
 exports retain the exploded positions, including selected-part exports; Rhino
 exports retain the assembly and their separate part layouts. Explosion is an
 inspection aid: overlap can remain in some camera projections, and it is not a
 collision test.
+
+Read [From a shell to buildable panels](docs/how-panels-are-fitted.md) for an illustrated explanation of the algorithm, why neighbouring flat parts must be solved together, and what makes some arrangements difficult.
 
 ## Saved projects, recovery and feedback
 

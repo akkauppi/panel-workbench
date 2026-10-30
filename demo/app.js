@@ -12,6 +12,7 @@ import { createProjectMetadata, advanceProjectRevision, assertStudySize } from '
 import { summarizeCalculation, compareCalculations, createDiagnosticReport } from './project-feedback.js';
 import { initProjectUI } from './project-ui.js';
 import { computeExplodedOffsets } from './explode.js';
+import { assemblyGuideCorners } from './assembly-guides.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
@@ -386,6 +387,10 @@ function buildAssemblyGuides() {
   assemblyGuideGroup.visible = $('show-assembly-guides').checked && state.explode > 0 && state.view !== 'reference';
   if (!assemblyGuideGroup.visible) return;
   const offsets = explodedOffsets(), scale = Math.max(...state.analysis.dimensions);
+  const pendingSource = state.view === 'surface' && state.sourceSurface;
+  const guideCorners = assemblyGuideCorners({ cells: arrangementCells(), view: state.view,
+    surfaceCells: pendingSource ? state.sourceSurface.cells : state.result?.surfaceCells || state.cells,
+    corners: arrangementCorners(), solids: pendingSource ? [] : state.result?.solids || [] });
   for (const cell of arrangementCells()) {
     const solid = state.result?.solids?.find(part => part.id === cell.id);
     const surface = state.sourceSurface?.cells.find(part => part.id === cell.id) || state.result?.surfaceCells?.find(part => part.id === cell.id) || cell;
@@ -393,18 +398,14 @@ function buildAssemblyGuides() {
     const positions = state.view === 'surface' ? surface.positions : physical ? solid.positions : cell.flatPositions;
     const loops = state.view === 'surface' ? surface.loops : physical
       ? Object.values(solid.caps || {}).flatMap(cap => cap.boundaryLoops || []) : cell.loops;
-    const offset = offsets.get(cell.id) || [0, 0, 0], edges = [], guides = [], ends = [], connected = new Set();
+    const offset = offsets.get(cell.id) || [0, 0, 0], edges = [], guides = [], ends = [];
     for (const loop of loops || []) for (let i = 0; i < loop.length; i++) {
-      const id = loop[i], point = positions[id], next = positions[loop[(i + 1) % loop.length]], previous = positions[loop[(i + loop.length - 1) % loop.length]];
-      if (!point || !next || !previous) continue;
-      edges.push(...point, ...next);
-      if (state.selectedIds.length && !state.selectedIds.includes(cell.id) || connected.has(id)) continue;
-      // Omit samples along straight boundary segments; retain actual turns.
-      const incoming = vectors(point).sub(vectors(previous)), outgoing = vectors(next).sub(vectors(point));
-      if (incoming.lengthSq() > 0 && outgoing.lengthSq() > 0 && incoming.normalize().dot(outgoing.normalize()) > .9999) continue;
-      connected.add(id);
-      const displaced = point.map((value, axis) => value + offset[axis]);
-      guides.push(...point, ...displaced); ends.push(...point, ...displaced);
+      const point = positions[loop[i]], next = positions[loop[(i + 1) % loop.length]];
+      if (point && next) edges.push(...point, ...next);
+    }
+    if (!state.selectedIds.length || state.selectedIds.includes(cell.id)) for (const { position } of guideCorners.get(cell.id) || []) {
+      const displaced = position.map((value, axis) => value + offset[axis]);
+      guides.push(...position, ...displaced); ends.push(...position, ...displaced);
     }
     const addLines = (points, material, kind) => {
       const lines = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(points, 3)), material);
@@ -412,11 +413,11 @@ function buildAssemblyGuides() {
       lines.userData.assemblyGuide = kind; lines.userData.cellId = cell.id;
       assemblyGuideGroup.add(lines);
     };
-    addLines(edges, new THREE.LineDashedMaterial({ color: '#485462', dashSize: scale * .006, gapSize: scale * .004, depthTest: false, transparent: true, opacity: .6 }), 'assembled');
+    addLines(edges, new THREE.LineDashedMaterial({ color: '#485462', dashSize: scale * .006, gapSize: scale * .004, depthTest: true, depthWrite: false, transparent: true, opacity: .6 }), 'assembled');
     if (guides.length) {
-      addLines(guides, new THREE.LineBasicMaterial({ color: '#98661c', depthTest: false, transparent: true, opacity: .48 }), 'corners');
+      addLines(guides, new THREE.LineBasicMaterial({ color: '#98661c', depthTest: true, depthWrite: false, transparent: true, opacity: .48 }), 'corners');
       const points = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(ends, 3)),
-        new THREE.PointsMaterial({ color: '#98661c', size: 3, sizeAttenuation: false, depthTest: false, transparent: true, opacity: .85 }));
+        new THREE.PointsMaterial({ color: '#98661c', size: 3, sizeAttenuation: false, depthTest: true, depthWrite: false, transparent: true, opacity: .85 }));
       points.userData.assemblyGuide = 'endpoints'; points.userData.cellId = cell.id; points.renderOrder = 9; assemblyGuideGroup.add(points);
     }
   }

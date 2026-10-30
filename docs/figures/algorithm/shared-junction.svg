@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+  <title id="title">A shared corner couples neighbouring panel fits</title>
+  <desc id="desc">On the left, three independently fitted panels propose three different positions for their common corner, leaving a gap. On the right, three panel faces use one shared vertex; adjusting that vertex and the face planes affects neighbouring boundaries. A common corner alone does not guarantee feasible outlines or stock, so the result must still be checked. All geometry is schematic.</desc>
+  <defs>
+    <marker id="move" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#ae650b"/></marker>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0L8 4.5L0 9" fill="none" stroke="#526173" stroke-width="1.6"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #233044; }
+      .heading { font-size: 26px; font-weight: 700; }
+      .stage { font-size: 21px; font-weight: 700; }
+      .body { font-size: 17px; }
+      .small { font-size: 14px; fill: #536174; }
+      .panel-name { font-size: 19px; font-weight: 700; fill: #604284; }
+      .fitted { stroke: #7450a1; stroke-width: 2.5; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <rect width="1200" height="440" fill="#fff"/>
+  <text class="heading" x="32" y="39">A shared corner makes this a neighbourhood problem</text>
+  <text class="small" x="32" y="64">Schematic · fitting one panel also constrains the panels that meet it</text>
+  <text class="stage" x="42" y="109">Independent fits</text>
+  <text class="stage" x="662" y="109">A jointly adjusted junction</text>
+
+  <g transform="translate(30 0)">
+    <polygon class="fitted" fill="#e9e0f4" points="95,155 255,130 235,215 90,280"/>
+    <polygon class="fitted" fill="#d9c9ec" points="278,131 450,170 435,285 275,225"/>
+    <polygon class="fitted" fill="#f0eaf7" points="100,297 245,245 440,309 270,345"/>
+    <text class="panel-name" x="143" y="208">P1</text>
+    <text class="panel-name" x="345" y="210">P2</text>
+    <text class="panel-name" x="250" y="306">P3</text>
+    <path d="M235 215L275 225L245 245Z" fill="#fff5e6" stroke="#ae650b" stroke-width="2" stroke-dasharray="4 3"/>
+    <g fill="#7450a1" stroke="#fff" stroke-width="1.5">
+      <circle cx="235" cy="215" r="5.5"/><circle cx="275" cy="225" r="5.5"/><circle cx="245" cy="245" r="5.5"/>
+    </g>
+    <path d="M320 132L266 211" fill="none" stroke="#ae650b" stroke-width="1.8" marker-end="url(#move)"/>
+    <text class="small" x="326" y="132">three positions</text>
+  </g>
+  <text class="body" x="42" y="375">Separate fits can leave a gap or overlap.</text>
+
+  <path d="M530 233H614" fill="none" stroke="#526173" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <g transform="translate(620 0)">
+    <polygon class="fitted" fill="#e9e0f4" points="70,155 240,130 240,230 75,292"/>
+    <polygon class="fitted" fill="#d9c9ec" points="240,130 420,173 415,304 240,230"/>
+    <polygon class="fitted" fill="#f0eaf7" points="75,292 240,230 415,304 240,345"/>
+    <text class="panel-name" x="128" y="212">P1</text>
+    <text class="panel-name" x="327" y="214">P2</text>
+    <text class="panel-name" x="230" y="307">P3</text>
+    <!-- Source anchor and short seam samples show that the shared fit moves. -->
+    <path d="M190 174L214 205L292 183 M214 205L192 267" fill="none" stroke="#176ea7" stroke-width="1.7" stroke-dasharray="5 5"/>
+    <circle cx="214" cy="205" r="5.5" fill="#fff" stroke="#176ea7" stroke-width="2"/>
+    <path d="M219 210L232 223" fill="none" stroke="#ae650b" stroke-width="2.5" marker-end="url(#move)"/>
+    <circle cx="240" cy="230" r="6.5" fill="#7450a1" stroke="#fff" stroke-width="2"/>
+    <path d="M327 133L247 220" fill="none" stroke="#526173" stroke-width="1.6"/>
+    <text class="small" x="333" y="133">one shared vertex</text>
+    <text class="small" x="66" y="132">blue: source anchor</text>
+  </g>
+  <text class="body" x="662" y="375">The shared vertex and neighbouring planes must agree.</text>
+
+  <rect x="24" y="399" width="1152" height="29" rx="5" fill="#fff5e6"/>
+  <text class="small" x="40" y="419">A shared junction is not a feasibility guarantee. Outlines, displacement and stock geometry still need checks.</text>
+</svg>

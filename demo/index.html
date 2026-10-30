@@ -231,7 +231,7 @@
             <div class="ribbon-stack ribbon-checks">
               <label class="checkbox-row"><input id="show-seeds" type="checkbox" checked=""><span>Cell centres</span></label>
               <label class="checkbox-row"><input id="show-fitting" type="checkbox"><span>Show fitting changes</span></label>
-              <label class="checkbox-row" title="With panels exploded, show their assembled outlines and matching corners. Select panels to limit the connecting lines."><input id="show-assembly-guides" type="checkbox"><span>Assembly guides</span></label>
+              <label class="checkbox-row" title="With panels exploded, show their assembled outlines and logical cell corners. Guides behind parts are hidden. Select panels to limit the connecting lines."><input id="show-assembly-guides" type="checkbox"><span>Assembly guides</span></label>
               <label class="checkbox-row"><input id="show-original" type="checkbox"><span>Source mesh overlay</span></label>
             </div>
           </div>
@@ -524,6 +524,7 @@
                 <p id="calculation-comparison" class="control-hint" role="status"></p>
                 <p class="control-hint">Show fitting changes: dashed gray is the source, blue the fitted outline, and orange connects corresponding corners. Select cells to limit the overlay.</p>
                 <p id="fit-repair-note" class="control-hint" hidden></p>
+                <p class="control-hint"><a href="https://github.com/akkauppi/panel-workbench/blob/main/docs/how-panels-are-fitted.md" target="_blank" rel="noopener">How panels are fitted · illustrated guide</a></p>
                 <p class="fit-explanation">Surface deviation measures the distance between fitted panels and the source mesh.</p>
               </div>
             </details>

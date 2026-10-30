@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+  <title id="title">One design, three different geometric representations</title>
+  <desc id="desc">A schematic curved shell with an authored seam layout leads to fitted planar panel faces, then to a physical part with thickness, joint treatment and optional inner-face carving. The source layout is saved; the fitted geometry and parts are recalculated. This is an explanatory drawing, not literal solver output.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L8 4.5 L0 9" fill="none" stroke="#526173" stroke-width="1.6"/></marker>
+    <marker id="small-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7Z" fill="#ae650b"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #233044; }
+      .heading { font-size: 26px; font-weight: 700; }
+      .stage { font-size: 21px; font-weight: 700; }
+      .body { font-size: 17px; }
+      .small { font-size: 14px; fill: #536174; }
+      .source { stroke: #176ea7; stroke-width: 2.5; stroke-linejoin: round; }
+      .fitted { stroke: #7450a1; stroke-width: 2.5; stroke-linejoin: round; }
+      .part { stroke: #526173; stroke-width: 2.5; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <rect width="1200" height="440" fill="#fff"/>
+  <text class="heading" x="32" y="39">One design, three representations</text>
+  <text class="small" x="32" y="64">Schematic · each stage answers a different question</text>
+  <path d="M388 99V366 M786 99V366" stroke="#dce2e9" stroke-width="1.5"/>
+
+  <g transform="translate(15 0)">
+    <text class="stage" x="24" y="112">1  Source layout</text>
+    <text class="small" x="24" y="137">Where should the seams go?</text>
+    <g transform="translate(0 1)">
+      <path class="source" fill="#dceefa" d="M95 175 Q150 140 200 150 Q190 185 195 215 Q130 210 75 240 Q75 200 95 175Z"/>
+      <path class="source" fill="#eaf5fc" d="M200 150 Q260 150 310 185 Q330 215 320 250 Q260 220 195 215 Q190 185 200 150Z"/>
+      <path class="source" fill="#edf6fb" d="M75 240 Q130 210 195 215 Q200 255 195 290 Q130 300 70 315 Q70 280 75 240Z"/>
+      <path class="source" fill="#d2e8f7" d="M195 215 Q260 220 320 250 Q320 285 310 320 Q255 300 195 290 Q200 255 195 215Z"/>
+      <g fill="#176ea7" stroke="#fff" stroke-width="1.5">
+        <circle cx="95" cy="175" r="4"/><circle cx="200" cy="150" r="4"/><circle cx="310" cy="185" r="4"/>
+        <circle cx="75" cy="240" r="4"/><circle cx="195" cy="215" r="5"/><circle cx="320" cy="250" r="4"/>
+        <circle cx="70" cy="315" r="4"/><circle cx="195" cy="290" r="4"/><circle cx="310" cy="320" r="4"/>
+      </g>
+    </g>
+    <text class="body" x="24" y="355">Seams and corners on the shell.</text>
+    <text class="small" x="24" y="378">A cell can still be curved.</text>
+  </g>
+
+  <path d="M367 230H414" fill="none" stroke="#526173" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <g transform="translate(413 0)">
+    <text class="stage" x="24" y="112">2  Fitted panel faces</text>
+    <text class="small" x="24" y="137">Can shared edges meet in flat faces?</text>
+    <polygon class="fitted" fill="#e9e0f4" points="80,175 195,155 190,225 70,245"/>
+    <polygon class="fitted" fill="#d9c9ec" points="195,155 305,185 315,250 190,225"/>
+    <polygon class="fitted" fill="#f1ebf8" points="70,245 190,225 195,300 80,315"/>
+    <polygon class="fitted" fill="#e2d5ee" points="190,225 315,250 305,315 195,300"/>
+    <g fill="#7450a1" stroke="#fff" stroke-width="1.5">
+      <circle cx="80" cy="175" r="4"/><circle cx="195" cy="155" r="4"/><circle cx="305" cy="185" r="4"/>
+      <circle cx="70" cy="245" r="4"/><circle cx="190" cy="225" r="5"/><circle cx="315" cy="250" r="4"/>
+      <circle cx="80" cy="315" r="4"/><circle cx="195" cy="300" r="4"/><circle cx="305" cy="315" r="4"/>
+    </g>
+    <text class="body" x="24" y="355">Jointly adjusted flat boundaries.</text>
+    <text class="small" x="24" y="378">Planarity, drift and outlines are checked.</text>
+  </g>
+
+  <path d="M765 230H812" fill="none" stroke="#526173" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <g transform="translate(811 0)">
+    <text class="stage" x="24" y="112">3  Physical parts</text>
+    <text class="small" x="24" y="137">Does the selected stock work?</text>
+    <!-- An enlarged part section: the planar outer face stays straight. -->
+    <path class="part" fill="#b9c1cb" d="M70 210L135 285L135 305L80 232Z"/>
+    <path class="part" fill="#d6dce4" d="M135 285L325 225L325 245L295 251Q240 252 190 280L135 305Z"/>
+    <polygon class="part" fill="#e8ecf1" points="70,210 260,150 325,225 135,285"/>
+    <path d="M78 214L87 229" stroke="#ae650b" stroke-width="3.2"/>
+    <path d="M190 280Q240 252 295 251" fill="none" stroke="#ae650b" stroke-width="3.2"/>
+    <text class="small" x="24" y="192">joint cut</text>
+    <path d="M66 197L81 217" fill="none" stroke="#ae650b" stroke-width="1.5" marker-end="url(#small-arrow)"/>
+    <text class="small" x="188" y="321">inner-face carving</text>
+    <path d="M239 305L238 266" fill="none" stroke="#ae650b" stroke-width="1.5" marker-end="url(#small-arrow)"/>
+    <text class="body" x="24" y="355">Thickness, joints, optional carving.</text>
+    <text class="small" x="24" y="378">Shown enlarged; solid geometry is checked.</text>
+  </g>
+
+  <rect x="24" y="399" width="1152" height="29" rx="5" fill="#f2f5f8"/>
+  <text class="small" x="40" y="419">The source layout is saved. Fitted faces and physical parts are recalculated; unresolved geometry remains flagged.</text>
+</svg>
