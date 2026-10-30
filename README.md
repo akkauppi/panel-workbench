@@ -1,0 +1,33 @@
+# Panel Workbench
+
+Arrange panels on a surface, edit shared corners, and inspect flat panels and solids in your browser.
+
+**Use the tool:** https://akkauppi.github.io/panel-workbench/
+
+No installation is needed for the hosted tool. Choose an example, or open your own OBJ mesh or saved study. Model imports and geometry calculations run locally in the browser. Save a study JSON before closing the page; send it privately to share an arrangement. Use a current desktop browser with WebGL enabled.
+
+## Manual arrangement
+
+In Cells, choose Drag corners. Adjoining seams and translucent cells follow the handle. Release to validate the arrangement; then continue moving corners while panel fitting runs in the background. Alt suppresses proximity snapping, and Escape cancels. Amber endpoints follow the perimeter. Concave and irregular layouts remain allowed. Crossings, folded editing charts, and invalid panels receive diagnostics. Saving and exports wait for the current fitting result.
+
+## Develop locally
+
+Use Node.js 24 or newer. The runtime and geometry tests have no npm dependencies; Three.js is vendored with its licence.
+
+```sh
+npm start
+# Open http://localhost:8787
+npm test
+npm run build:public
+npm run build:pages
+```
+
+The optional browserless interaction suite needs jsdom. Install it separately and run `JSDOM_MODULE=/path/to/jsdom/lib/api.js npm run test:ui`. That suite mocks rendering; it does not verify actual WebGL appearance or hardware frame rate.
+
+This repository is self-contained: app source is in demo/, serving code in server.mjs, synthetic tests alongside the app, and packaging tools in scripts/. GitHub Actions runs the tests and publishes only the reviewed static app from dist/panel-workbench-pages/ to Pages on each main-branch push. Configure Settings > Pages > Source as GitHub Actions.
+
+## Geometry limits
+
+Surface partitions, jointly fitted flat panels, and thick solids are separate stages. Shared edges remain matched; fitting may offset panels from the reference shell. Some strongly folded regions cannot use the current local editing chart. Check planarity, surface deviation, stock thickness, and solid validity. Outlines are not optimized sheet nesting or CNC toolpaths. Fasteners, grain, assembly sequence, tool access, and all inter-panel collisions are not solved.
+
+The gallery uses procedural synthetic examples. No private reference models, saved studies, credentials, or previous project history are included. Third-party Three.js licensing is in demo/vendor/THREE-LICENSE.txt.

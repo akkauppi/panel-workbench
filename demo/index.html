@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f8fa">
+    <meta name="description" content="Panel Workbench: partition a surface mesh, edit shared corners and seams, and inspect fitted panels and solids.">
+    <title>Panel Workbench</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23245db4'/%3E%3Cpath d='M6 6h20v20H6Z M6 17l11-5 9 7M17 6v6l-5 14' fill='none' stroke='%23ffffff' stroke-width='1.5'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./style.css">
+    <script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}</script>
+  </head>
+  <body>
+    <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-cell" viewBox="0 0 24 24"><path d="M3 3h18v18H3Z M3 14l10-5 8 7M13 3v6L9 21"></path></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3"></path></symbol>
+    <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3"></path></symbol>
+    <symbol id="i-corner" viewBox="0 0 24 24"><path d="M3 3h5v5H3ZM16 3h5v5h-5ZM3 16h5v5H3ZM16 16h5v5h-5ZM8 5.5h8M5.5 8v8m13-8v8M8 18.5h8"></path></symbol>
+    <symbol id="i-select" viewBox="0 0 24 24"><path d="M3 8V3h5m8 0h5v5M3 16v5h5m8 0h5v-5M8 8h8v8H8Z"></path></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5M8 8h8v8H8Z"></path></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"></path></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3h12l4 4v14H3V3Zm2 0v6h10V3M7 21v-8h10v8"></path></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V4h6l3 3h9v13H3Zm0 3h18"></path></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"></path></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><path d="M3 3h18v18H3ZM12 10v7m0-11v2"></path></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 5 3 10l6 5M3 10h10a7 7 0 0 1 7 7v2"></path></symbol><symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 5 6 5-6 5m6-5H11a7 7 0 0 0-7 7v2"></path></symbol><symbol id="i-merge" viewBox="0 0 24 24"><path d="M3 4h18v16H3Zm9 0v4m0 8v4M5 12h5m-3-3 3 3-3 3m12-3h-5m3-3-3 3 3 3"></path></symbol><symbol id="i-clear" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"></path></symbol><symbol id="i-reset" viewBox="0 0 24 24"><path d="M4 4v6h6M4 10a8 8 0 1 1 0 5"></path></symbol><symbol id="i-iso" viewBox="0 0 24 24"><path d="m12 2 9 5v10l-9 5-9-5V7Zm-9 5 9 5 9-5m-9 5v10"></path></symbol><symbol id="i-sheet" viewBox="0 0 24 24"><path d="M4 3h16v18H4Zm4 4h8M8 11h8M8 15h5"></path></symbol><symbol id="i-top" viewBox="0 0 24 24"><path d="M3 5h18v14H3Zm4 4h10v6H7Z"></path></symbol><symbol id="i-front" viewBox="0 0 24 24"><path d="M4 4h16v16H4Zm0 12h16M8 4v12"></path></symbol><symbol id="i-right" viewBox="0 0 24 24"><path d="M4 4h16v16H4Zm12 0v16M4 8h12"></path></symbol></defs></svg>
+    <header class="app-header">
+      <a class="application-mark" href="./" aria-label="Panel Workbench home" title="Panel Workbench"><svg><use href="#i-cell"></use></svg></a>
+      <div class="quick-access" role="toolbar" aria-label="Quick Access">
+        <button id="save-study" class="quick-button" type="button" aria-label="Save study" title="Save study"><svg><use href="#i-save"></use></svg></button>
+        <button id="undo-move" class="quick-button" type="button" aria-label="Undo" title="Undo · Ctrl/Cmd+Z" disabled=""><svg><use href="#i-undo"></use></svg></button>
+        <button id="redo-edit" class="quick-button" type="button" aria-label="Redo" title="Redo · Ctrl/Cmd+Shift+Z" disabled=""><svg><use href="#i-redo"></use></svg></button>
+      </div>
+      <div class="document-title">
+        <strong id="document-name">Untitled study</strong>
+        <span> — Panel Workbench</span>
+      </div>
+      <div class="header-context">
+        <span class="status-dot"></span>
+        Local workspace
+      </div>
+    </header>
+    <nav class="ribbon-tabs" role="tablist" aria-label="Ribbon">
+      <button id="ribbon-tab-file" class="ribbon-tab file-tab" type="button" role="tab" data-ribbon-tab="file" aria-controls="ribbon-panel-file" aria-selected="false" tabindex="-1">File</button>
+      <button id="ribbon-tab-modify" class="ribbon-tab" type="button" role="tab" data-ribbon-tab="modify" aria-controls="ribbon-panel-modify" aria-selected="true" tabindex="0">Modify</button>
+      <button id="ribbon-tab-layout" class="ribbon-tab" type="button" role="tab" data-ribbon-tab="layout" aria-controls="ribbon-panel-layout" aria-selected="false" tabindex="-1">Layout</button>
+      <button id="ribbon-tab-view" class="ribbon-tab" type="button" role="tab" data-ribbon-tab="view" aria-controls="ribbon-panel-view" aria-selected="false" tabindex="-1">View</button>
+      <button id="ribbon-tab-export" class="ribbon-tab" type="button" role="tab" data-ribbon-tab="export" aria-controls="ribbon-panel-export" aria-selected="false" tabindex="-1">Export</button>
+    </nav>
+    <div class="ribbon-panels">
+      <section id="ribbon-panel-file" class="ribbon-panel" role="tabpanel" data-ribbon-panel="file" aria-labelledby="ribbon-tab-file" hidden="">
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <button id="import-model" class="ribbon-command ribbon-large" type="button" aria-label="Open OBJ mesh" title="Open OBJ mesh"><svg><use href="#i-folder"></use></svg><span>Open mesh</span></button>
+            <button id="load-study" class="ribbon-command ribbon-large" type="button" aria-label="Open saved study" title="Open saved study"><svg><use href="#i-folder"></use></svg><span>Open study</span></button>
+          </div>
+          <div class="ribbon-group-caption">Open</div>
+        </div>
+        <div class="ribbon-group ribbon-note-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-note">
+              <strong>Continue a saved design</strong>
+              <span>Restore source, layout and settings from a saved study.</span>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Study files</div>
+        </div>
+        <div class="ribbon-group ribbon-note-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-note">
+              <strong>Start from a surface</strong>
+              <span>Open an OBJ, drop it into the model view, or choose a Study Browser example.</span>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Source geometry</div>
+        </div>
+      </section>
+      <section id="ribbon-panel-modify" class="ribbon-panel" role="tabpanel" data-ribbon-panel="modify" aria-labelledby="ribbon-tab-modify">
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="tool-modes" role="group" aria-label="Editing mode">
+              <button id="edit-toggle" class="ribbon-command ribbon-large" type="button" aria-pressed="true" title="Move cell centres"><svg><use href="#i-move"></use></svg>Move cells</button>
+              <button id="corner-toggle" class="ribbon-command ribbon-large" type="button" aria-pressed="false" title="Drag shared corners in the current view"><svg><use href="#i-corner"></use></svg>Drag corners</button>
+              <button id="multi-select" class="ribbon-command ribbon-large" type="button" aria-pressed="false" title="Add or remove cells from the selection"><svg><use href="#i-select"></use></svg>Select cells</button>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Modify</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <button id="merge-cells" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-merge"></use></svg>Merge selected</button>
+            <button id="clear-selection" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-clear"></use></svg>Clear</button>
+          </div>
+          <div class="ribbon-group-caption">Selection</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-stack">
+              <button id="reset-corners" class="ribbon-command ribbon-small" type="button" disabled="">Reset corners</button>
+              <button id="reset-layout" class="ribbon-command ribbon-small" type="button">Reset cell edits</button>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Reset</div>
+        </div>
+        <div class="ribbon-group ribbon-guidance-group">
+          <div class="ribbon-group-content">
+            <p id="merge-status" class="ribbon-guidance" aria-live="polite">Select adjoining cells to remove their shared seam.</p>
+          </div>
+          <div class="ribbon-group-caption">Selection guidance</div>
+        </div>
+      </section>
+      <section id="ribbon-panel-layout" class="ribbon-panel" role="tabpanel" data-ribbon-panel="layout" aria-labelledby="ribbon-tab-layout" hidden="">
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-field pattern-field">
+              <label for="pattern-type">Pattern</label>
+              <select id="pattern-type" aria-describedby="pattern-help">
+                <option value="organic">Organic</option>
+                <option value="regularized">Regularized surface</option>
+                <option value="hexagonal">Planar hexagons</option>
+                <option value="geodesic">Spherical pentagons / hexagons</option>
+              </select>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Layout pattern</div>
+        </div>
+        <div id="size-control" class="ribbon-group generation-section">
+          <div class="ribbon-group-content">
+            <div class="ribbon-slider">
+              <div class="control-label">
+                <label for="size">Cell size</label>
+                <output id="size-value" for="size">620 <span>mm</span></output>
+              </div>
+              <input id="size" type="range" min="220" max="1100" step="20" value="620" aria-describedby="size-help">
+              <div class="size-presets" role="group" aria-label="Cell size presets">
+                <button type="button" data-size="420">Small</button>
+                <button type="button" data-size="620" class="is-active">Medium</button>
+                <button type="button" data-size="900">Large</button>
+              </div>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Cell spacing</div>
+        </div>
+        <div id="pattern-angle-control" class="ribbon-group" hidden="">
+          <div class="ribbon-group-content">
+            <div class="ribbon-field pattern-angle-field">
+              <label for="pattern-angle">Orientation</label>
+              <span class="number-with-unit"><input id="pattern-angle" type="number" min="0" max="359" step="1" value="0" aria-describedby="pattern-help"><span aria-hidden="true">°</span></span>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Lattice rotation</div>
+        </div>
+        <div id="pattern-frequency-control" class="ribbon-group" hidden="">
+          <div class="ribbon-group-content">
+            <div class="ribbon-field pattern-frequency-field">
+              <label for="pattern-frequency">Frequency</label>
+              <select id="pattern-frequency" aria-describedby="pattern-help">
+                <option value="1">1 · 12 on full sphere</option>
+                <option value="2" selected="">2 · 42 on full sphere</option>
+                <option value="3">3 · 92 on full sphere</option>
+                <option value="4">4 · 162 on full sphere</option>
+                <option value="5">5 · 252 on full sphere</option>
+                <option value="6">6 · 362 on full sphere</option>
+              </select>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Sphere subdivision</div>
+        </div>
+        <div id="pattern-regularity-control" class="ribbon-group" hidden="">
+          <div class="ribbon-group-content">
+            <div class="ribbon-slider">
+              <div class="control-label">
+                <label for="pattern-regularity">Regularity</label>
+                <output id="pattern-regularity-value" for="pattern-regularity">70<span>%</span></output>
+              </div>
+              <input id="pattern-regularity" type="range" min="0" max="100" step="10" value="70" aria-describedby="pattern-help">
+              <div class="range-endpoints">
+                <span>Less</span>
+                <span>More</span>
+              </div>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Surface relaxation</div>
+        </div>
+        <div id="variation-control" class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-slider">
+              <div class="control-label">
+                <label for="variation">Variation</label>
+                <output id="variation-value" for="variation">30<span>%</span></output>
+              </div>
+              <input id="variation" type="range" min="0" max="100" step="5" value="30">
+              <div class="range-endpoints">
+                <span>Even spacing</span>
+                <span>Organic</span>
+              </div>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Distribution</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <button id="regenerate" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-refresh"></use></svg>New arrangement</button>
+          </div>
+          <div class="ribbon-group-caption">Generate</div>
+        </div>
+        <div class="ribbon-group ribbon-note-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-note">
+              <p id="pattern-help" class="control-hint">Randomized surface layout.</p>
+              <p id="size-help" class="control-hint">Cell size sets spacing.</p>
+              <p id="generation-help" class="control-hint">Replaces edits. Undo restores them.</p>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Generation settings</div>
+        </div>
+      </section>
+      <section id="ribbon-panel-view" class="ribbon-panel" role="tabpanel" data-ribbon-panel="view" aria-labelledby="ribbon-tab-view" hidden="">
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div id="color-tabs" class="segmented" role="group" aria-label="Panel colouring">
+              <button type="button" data-color="timber" class="is-active" aria-pressed="true">Material</button>
+              <button type="button" data-color="fit" aria-pressed="false">Surface fit</button>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Visual style</div>
+        </div>
+        <div class="ribbon-group appearance-section">
+          <div class="ribbon-group-content">
+            <div class="ribbon-stack ribbon-checks">
+              <label class="checkbox-row"><input id="show-seeds" type="checkbox" checked=""><span>Cell centres</span></label>
+              <label class="checkbox-row"><input id="show-original" type="checkbox"><span>Source mesh overlay</span></label>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Visibility</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-slider">
+              <div class="control-label">
+                <label for="explode">Explode panels</label>
+                <output id="explode-value" for="explode">0<span>%</span></output>
+              </div>
+              <input id="explode" type="range" min="0" max="100" step="5" value="0">
+              <div class="range-endpoints">
+                <span>Assembled</span>
+                <span>Exploded</span>
+              </div>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Exploded view</div>
+        </div>
+        <div class="ribbon-group ribbon-note-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-note">
+              <strong>One model, four views</strong>
+              <span>Use the view tabs or Study Browser. Camera controls sit below the model.</span>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">View navigation</div>
+        </div>
+      </section>
+      <section id="ribbon-panel-export" class="ribbon-panel" role="tabpanel" data-ribbon-panel="export" aria-labelledby="ribbon-tab-export" hidden="">
+        <div class="ribbon-group export-section">
+          <div class="ribbon-group-content">
+            <button id="export-obj" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>3D panels <span class="file-type">OBJ</span></button>
+            <button id="export-stl" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Solid panels <span class="file-type">STL</span></button>
+            <button id="export-dxf" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Flat outlines <span class="file-type">DXF</span></button>
+          </div>
+          <div class="ribbon-group-caption">Entire layout</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-stack">
+              <button id="export-selected-dxf" class="ribbon-command ribbon-small" type="button"><svg><use href="#i-sheet"></use></svg>Outline · DXF</button>
+              <button id="export-selected-obj" class="ribbon-command ribbon-small" type="button"><svg><use href="#i-iso"></use></svg>Panel · OBJ</button>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Selected cell</div>
+        </div>
+        <div class="ribbon-group ribbon-note-group">
+          <div class="ribbon-group-content">
+            <div class="fabrication-note">
+              <svg><use href="#i-info"></use></svg>
+              <p>Shared seams are fitted together. Review panel geometry before fabrication.</p>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Fabrication</div>
+        </div>
+      </section>
+    </div>
+    <div class="options-bar editing-section" aria-label="Tool options">
+      <strong id="active-tool-name" class="active-tool-name">Move cells</strong>
+      <div class="active-tool-options">
+        <p id="move-cells-help" class="control-hint">Drag a centre to reshape neighbouring cells. Merged cell centres stay fixed.</p>
+        <p class="control-hint multi-select-help">Click cells to add or remove them from the selection. Shift-click also adds cells.</p>
+        <div class="corner-controls">
+          <label class="checkbox-row"><input id="allow-cell-removal" type="checkbox" checked="" aria-describedby="cell-removal-help"><span>Allow cell removal</span></label>
+          <details class="tool-help">
+            <summary><svg><use href="#i-info"></use></svg>Corner help</summary>
+            <div>
+              <p id="corner-help" class="control-hint">Slide a shared corner in the current view. Release to refit; Escape cancels. Amber endpoints follow their original opening or perimeter.</p>
+              <p id="cell-removal-help" class="control-hint">Remove cells that collapse. Crossing seams stay blocked.</p>
+            </div>
+          </details>
+          <p id="corner-status" class="control-hint" aria-live="polite">Available in Cells, Flat and Solid.</p>
+        </div>
+      </div>
+      <span id="ribbon-selection-context" class="selection-context">No selection</span>
+    </div>
+    <input id="mesh-file" type="file" accept=".obj,text/plain" hidden="">
+    <input id="study-file" type="file" accept=".json,application/json" hidden="">
+    <div class="workbench">
+      <aside class="left-dock controls" aria-label="Properties and Study Browser">
+        <section class="properties-palette inspector" aria-labelledby="properties-heading">
+          <header class="palette-heading">
+            <h1 id="properties-heading">Properties</h1>
+            <span class="palette-unit">mm</span>
+          </header>
+          <div class="properties-scroll">
+            <div id="selection-empty" class="selection-empty">
+              <div class="empty-illustration" aria-hidden="true">
+                <svg viewBox="0 0 40 40"><path d="M3 3h34v34H3ZM3 24l18-10 16 13M21 3v11L13 37"></path><path d="M18 11h6v6h-6Z"></path></svg>
+              </div>
+              <h3>No cell selected</h3>
+              <p>Select a cell to inspect its outline, dimensions and surface fit.</p>
+            </div>
+            <section id="selection-details" class="selection-details" hidden="">
+              <div class="selected-heading">
+                <span class="small-label">Cell</span>
+                <strong id="selected-id">—</strong>
+              </div>
+              <div class="panel-preview-wrap">
+                <canvas id="panel-preview" width="440" height="340" aria-label="Selected cell cutting outline"></canvas>
+                <span>FLAT OUTLINE · MM</span>
+              </div>
+              <div class="cell-influence">
+                <div class="control-label">
+                  <label for="cell-weight">Cell influence</label>
+                  <output id="cell-weight-value" for="cell-weight">100<span>%</span></output>
+                </div>
+                <input id="cell-weight" type="range" min="50" max="180" step="5" value="100" aria-describedby="cell-weight-help">
+                <div class="range-endpoints">
+                  <span>Less area</span>
+                  <span>More area</span>
+                </div>
+                <p id="cell-weight-help" class="control-hint">Give this cell more area. Its neighbours adjust.</p>
+              </div>
+              <dl class="panel-metrics">
+                <div>
+                  <dt>Overall size</dt>
+                  <dd id="selected-size">—</dd>
+                </div>
+                <div>
+                  <dt>Area</dt>
+                  <dd id="selected-area">—</dd>
+                </div>
+                <div title="Convexity of the fitted cutting outline. Concave panels remain allowed.">
+                  <dt>Convexity</dt>
+                  <dd id="selected-convexity">—</dd>
+                </div>
+                <div>
+                  <dt>Surface deviation</dt>
+                  <dd id="selected-fit">—</dd>
+                </div>
+                <div>
+                  <dt>Joint gap</dt>
+                  <dd id="selected-gap">—</dd>
+                </div>
+                <div>
+                  <dt>Wood remaining</dt>
+                  <dd id="selected-stock">—</dd>
+                </div>
+                <div id="selected-roundover-row" hidden="">
+                  <dt>Edge roundover</dt>
+                  <dd id="selected-roundover">—</dd>
+                </div>
+              </dl>
+              <p id="selected-note" class="control-hint"></p>
+            </section>
+            <details class="property-section panel-shape-section">
+              <summary>Panel geometry <span class="group-scope">All cells</span></summary>
+              <div class="property-group">
+                <div class="shape-control">
+                  <div class="control-label">
+                    <label for="straightness">Border simplification</label>
+                    <output id="straightness-value" for="straightness">70<span>%</span></output>
+                  </div>
+                  <input id="straightness" type="range" min="0" max="100" step="5" value="70" aria-describedby="straightness-help">
+                  <div class="range-endpoints">
+                    <span>Follow surface</span>
+                    <span>Simplify</span>
+                  </div>
+                  <p id="straightness-help" class="control-hint">Shared seams stay straight. Simplifies opening and perimeter outlines.</p>
+                </div>
+                <div class="shape-control">
+                  <div class="control-label">
+                    <label for="thickness">Stock thickness</label>
+                    <output id="thickness-value" for="thickness">40 <span>mm</span></output>
+                  </div>
+                  <input id="thickness" type="range" min="10" max="300" step="5" value="40">
+                  <div class="range-endpoints">
+                    <span>10 mm</span>
+                    <span>300 mm</span>
+                  </div>
+                </div>
+                <div class="shape-control">
+                  <div class="control-label">
+                    <label for="roundover">Edge roundover</label>
+                    <output id="roundover-value" for="roundover">2 <span>mm</span></output>
+                  </div>
+                  <input id="roundover" type="range" min="0" max="10" step="0.5" value="2">
+                  <div class="range-endpoints">
+                    <span>Sharp</span>
+                    <span>Rounded</span>
+                  </div>
+                </div>
+                <div class="carving-controls">
+                  <label class="checkbox-row"><input id="carve-inner" type="checkbox"><span>Carve inside face</span></label>
+                  <div class="number-control">
+                    <label for="minimum-thickness">Minimum wood left</label>
+                    <span class="number-with-unit"><input id="minimum-thickness" type="number" min="3" max="100" step="1" value="12" inputmode="decimal"><span>mm</span></span>
+                  </div>
+                  <p class="control-hint">Flat outer face; inner face follows the source.</p>
+                </div>
+              </div>
+            </details>
+            <details class="property-section layout-health" open="">
+              <summary>Layout checks <span class="group-scope">All cells</span></summary>
+              <div class="health-body">
+                <div class="health-metric">
+                  <span>Max. surface deviation</span>
+                  <strong id="fit-max">—</strong>
+                </div>
+                <div class="health-metric">
+                  <span>Panel flatness</span>
+                  <strong id="planarity-error">—</strong>
+                </div>
+                <div class="health-metric">
+                  <span>Max. joint gap</span>
+                  <strong id="seam-gap">—</strong>
+                </div>
+                <div class="health-metric">
+                  <span>Solid panels</span>
+                  <strong id="stock-check">—</strong>
+                </div>
+                <div class="health-metric" title="Convexity of fitted cutting outlines. Concave panels remain allowed.">
+                  <span>Convex panels</span>
+                  <strong id="convex-check">—</strong>
+                </div>
+                <p id="boundary-note" class="boundary-note"><span class="boundary-dot"></span>Source openings preserved</p>
+                <p class="fit-explanation">Surface deviation measures the distance between fitted panels and the source mesh.</p>
+              </div>
+            </details>
+          </div>
+        </section>
+        <section class="study-browser" aria-labelledby="browser-heading">
+          <header class="palette-heading">
+            <h2 id="browser-heading">Study Browser</h2>
+            <span class="palette-unit">Model</span>
+          </header>
+          <div class="browser-scroll">
+            <details class="browser-branch" open="">
+              <summary><svg><use href="#i-folder"></use></svg>Views</summary>
+              <div class="browser-children">
+                <button type="button" class="browser-view is-active" data-browser-view="surface" aria-pressed="true"><svg><use href="#i-cell"></use></svg><span>Cells</span></button>
+                <button type="button" class="browser-view" data-browser-view="flat" aria-pressed="false"><svg><use href="#i-sheet"></use></svg><span>Flat panels</span></button>
+                <button type="button" class="browser-view" data-browser-view="solid" aria-pressed="false"><svg><use href="#i-iso"></use></svg><span>Solid panels</span></button>
+                <button type="button" class="browser-view" data-browser-view="reference" aria-pressed="false"><svg><use href="#i-select"></use></svg><span>Original surface</span></button>
+              </div>
+            </details>
+            <details class="browser-branch source-branch" open="">
+              <summary><svg><use href="#i-cell"></use></svg>Source model</summary>
+              <div class="browser-source-info">
+                <span id="model-name" class="model-name">Synthetic example</span>
+                <span id="mesh-note" class="model-detail">Choose an example or open an OBJ mesh.</span>
+              </div>
+            </details>
+            <div class="example-picker">
+              <label for="example-select" class="small-label">Examples</label>
+              <div class="example-picker-controls">
+                <select id="example-select" aria-label="Choose example"></select>
+                <button id="load-example" class="button" type="button" aria-label="Load selected example">Load</button>
+              </div>
+            </div>
+            <details class="model-settings">
+              <summary>Model settings</summary>
+              <label for="model-units">Source units<select id="model-units"><option value="mm">Millimetres</option><option value="cm">Centimetres</option><option value="m">Metres</option></select></label>
+              <label for="model-up">Vertical axis<select id="model-up"><option value="y">Y axis</option><option value="z">Z axis</option></select></label>
+            </details>
+          </div>
+        </section>
+      </aside>
+      <main id="stage" class="stage" aria-label="Interactive panel model">
+        <div class="stage-toolbar">
+          <div id="view-tabs" class="view-tabs" role="group" aria-label="Model view">
+            <button type="button" data-view="surface" class="is-active" aria-pressed="true" aria-label="Cell layout" title="Cells on the source surface">Cells</button>
+            <button type="button" data-view="flat" aria-pressed="false" aria-label="Flat panels" title="Fitted flat panels with shared seams">Flat</button>
+            <button type="button" data-view="solid" aria-pressed="false" aria-label="Solid panels" title="Solid panels with thickness and edge treatment">Solid</button>
+            <button type="button" data-view="reference" aria-pressed="false" aria-label="Original shape" title="Original source surface">Original</button>
+          </div>
+        </div>
+        <div class="viewport-wrap">
+          <div id="viewport" aria-label="3D model. Drag to orbit, scroll to zoom, or use the editing tools to change the layout."></div>
+          <div id="mesh-drop" class="mesh-drop" hidden="">
+            <svg><use href="#i-folder"></use></svg>
+            <strong>Open mesh</strong>
+            <span>Drop an OBJ file here</span>
+          </div>
+          <div class="viewport-label">
+            <span class="eyebrow">MODEL</span>
+            <span class="cell-counter"><strong id="cell-count">—</strong> cells</span>
+          </div>
+          <div id="loading" class="loading" role="status">
+            <span class="loading-ring"></span>
+            <span>Loading model…</span>
+          </div>
+          <div class="viewport-caption">
+            <span class="compass-mark">Y<span>↑</span></span>
+            <span id="viewport-hint">Drag a centre to edit <span class="hint-divider">·</span> Drag the model to orbit <span class="hint-divider">·</span> Scroll to zoom</span>
+          </div>
+        </div>
+        <div class="view-control-bar">
+          <span id="view-name" class="view-name">Cells</span>
+          <span class="view-control-divider"></span>
+          <div class="camera-views" role="group" aria-label="Camera orientation">
+            <button type="button" class="view-control-button" data-camera-view="iso" aria-pressed="true" title="Default 3D camera"><svg><use href="#i-iso"></use></svg><span>3D</span></button>
+            <button type="button" class="view-control-button" data-camera-view="top" aria-pressed="false" title="Top camera"><svg><use href="#i-top"></use></svg><span>Top</span></button>
+            <button type="button" class="view-control-button" data-camera-view="front" aria-pressed="false" title="Front camera"><svg><use href="#i-front"></use></svg><span>Front</span></button>
+            <button type="button" class="view-control-button" data-camera-view="right" aria-pressed="false" title="Right camera"><svg><use href="#i-right"></use></svg><span>Right</span></button>
+          </div>
+          <span class="view-control-spacer"></span>
+          <button id="fit-view" class="icon-button" type="button" aria-label="Fit model in view" title="Fit model in view"><svg><use href="#i-fit"></use></svg></button>
+        </div>
+        <div class="stage-status">
+          <span class="status-indicator"></span>
+          <span id="status" role="status" aria-live="polite">Loading source mesh…</span>
+          <span class="stage-status-end">LOCAL</span>
+        </div>
+      </main>
+    </div>
+    <footer class="app-footer">
+      <span>Synthetic example · Dimensions in mm</span>
+      <span>PANEL WORKBENCH · LOCAL</span>
+    </footer>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

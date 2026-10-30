@@ -1,0 +1,12 @@
+{
+  "name": "panel-workbench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "build:public": "node scripts/build-public.mjs",
+    "build:pages": "node scripts/build-pages.mjs",
+    "test": "node --test demo/*.test.mjs",
+    "test:ui": "node scripts/check-ui.mjs"
+  }
+}
