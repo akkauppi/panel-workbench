@@ -139,12 +139,14 @@ function labelFor(cell, index) {
   return `P${String(index + 1).padStart(3, '0')}`;
 }
 
-/** Export the same fitted panel geometry shown in the flat-panel preview. */
+/** Export the preview geometry. A panel's explicit offsets Map entry replaces
+ * its legacy normal-based explode translation; missing entries use explode. */
 export function exportCellsOBJ(cells, options = {}) {
   if (!Array.isArray(cells) || !cells.length) throw new Error('There are no cells to export yet.');
   const flat = options.flat !== false;
   const explode = Number(options.explode || 0);
   if (!Number.isFinite(explode)) throw new Error('Invalid explode distance.');
+  if (options.offsets !== undefined && !(options.offsets instanceof Map)) throw new Error('Panel export offsets must be a Map.');
   const lines = [
     '# Panel Workbench cell layout', '# Units: millimetres',
     '# Panel study; review geometry and joint detailing before fabrication.',
@@ -156,8 +158,11 @@ export function exportCellsOBJ(cells, options = {}) {
     const cell = cells[ci], positions = flat ? cell.flatPositions : cell.positions;
     if (!positions?.length || !cell.triangles?.length) throw new Error(`Cell ${ci + 1} has no geometry to export.`);
     const normal = cell.plane?.normal || [0, 0, 0];
+    const hasOffset = options.offsets?.has(cell.id);
+    const shift = hasOffset ? options.offsets.get(cell.id) : normal.map(value => value * explode);
+    if (hasOffset && (!Array.isArray(shift) || shift.length !== 3 || !shift.every(Number.isFinite))) throw new Error(`Cell ${ci + 1} has an invalid export offset.`);
     lines.push(`o ${labelFor(cell, ci)}`, `g ${labelFor(cell, ci)}`);
-    for (const p of positions) lines.push(`v ${p.map((v, axis) => number(v + normal[axis] * explode)).join(' ')}`);
+    for (const p of positions) lines.push(`v ${p.map((v, axis) => number(v + shift[axis])).join(' ')}`);
     for (const triangle of cell.triangles) {
       if (triangle.length !== 3 || triangle.some(v => !Number.isInteger(v) || v < 0 || v >= positions.length)) {
         throw new Error(`Cell ${ci + 1} has an invalid face.`);

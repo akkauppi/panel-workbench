@@ -3,11 +3,15 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { parseOBJ, exportCellsOBJ, exportCellsDXF } from './io.js';
 import { analyzeModel, createMergeGroups } from './geometry.js';
 import { exportSolidsOBJ, exportSolidsSTL } from './solids.js';
-import { captureDesign, createStudy, readStudy, immutableLayout } from './study.js';
+import { captureDesign, createStudy, readStudy, serializeStudy, immutableLayout } from './study.js';
 import { cornerDisplayPosition, cornerProjectionPatch, projectCornerDisplacement } from './corner-drag.js';
 import { previewCornerMove, createCornerSketch, layoutCellHandle, previewCellSplit } from './layout-edit.js';
 import { initLaserUI } from './laser-ui.js';
-import { nextLayoutCellId } from './layout.js';
+import { nextLayoutCellId, layoutRecipe } from './layout.js';
+import { createProjectMetadata, advanceProjectRevision, assertStudySize } from './project-document.js';
+import { summarizeCalculation, compareCalculations, createDiagnosticReport } from './project-feedback.js';
+import { initProjectUI } from './project-ui.js';
+import { computeExplodedOffsets } from './explode.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
@@ -25,6 +29,8 @@ const state = {
   pattern: readPattern(), generating: false,
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
   straightness: 0.7, thickness: 40, roundover: 2, carve: false, minimumThickness: 12, flipOutside: false,
+  project: null, lastCalculation: undefined, openedCalculation: null, comparison: null, latestAcceptedEdit: null, latestRejection: null,
+  recoveryEnabled: false, downloadedRevision: 0, documentUnits: 'mm', documentUp: 'y',
   revision: 0, requested: 0, busy: false, pending: null, modelRevision: 0, solved: false
 };
 const laserUI = initLaserUI({ download });
@@ -55,8 +61,8 @@ const fill = new THREE.DirectionalLight(0xe1edff, 1.0);
 scene.add(fill);
 const cellGroup = new THREE.Group(), seedGroup = new THREE.Group(), referenceGroup = new THREE.Group();
 const junctionGroup = new THREE.Group(), cornerGroup = new THREE.Group(), cornerGuide = new THREE.Group();
-const cornerSketchGroup = new THREE.Group();
-scene.add(cellGroup, seedGroup, referenceGroup, junctionGroup, cornerGroup, cornerGuide, cornerSketchGroup);
+const cornerSketchGroup = new THREE.Group(), fittingGroup = new THREE.Group(), assemblyGuideGroup = new THREE.Group();
+scene.add(cellGroup, seedGroup, referenceGroup, junctionGroup, cornerGroup, cornerGuide, cornerSketchGroup, fittingGroup, assemblyGuideGroup);
 let sourceMesh, grid, seedGeometry, seedMaterial;
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 const worker = new Worker('./worker.js', { type: 'module' });
@@ -64,7 +70,7 @@ const validationWorker = new Worker('./worker.js', { type: 'module' });
 let rhinoWorker = null;
 const rhinoRequests = new Map();
 let rhinoSequence = 0, exportingRhino = false;
-let diagnosticResult = null, diagnosticWaiting = null;
+let diagnosticResult = null, diagnosticWaiting = null, projectUI;
 function rhinoOperation(inputs) {
   if (!rhinoWorker) {
     rhinoWorker = new Worker('./rhino-worker.js', { type: 'module' });
@@ -88,8 +94,66 @@ const mm = value => Number.isFinite(value) ? `${value < 10 ? value.toFixed(1) : 
 const panelId = id => `P${String(Number(id) + 1).padStart(3, '0')}`;
 const viewNames = { surface: 'Cells', flat: 'Flat panels', solid: 'Solid panels', reference: 'Original surface' };
 
+function buildIdentity() { return $('build-version').dataset.build || 'Local development'; }
+function sourceCanSave() {
+  return !!state.layout && !!state.project && !state.generating && !cornerPending && !drag &&
+    JSON.stringify(state.layout.recipe) === JSON.stringify(layoutRecipe(state));
+}
+function currentStudy() {
+  if (!sourceCanSave()) return null;
+  return createStudy(state, { units: state.documentUnits, up: state.documentUp,
+    camera: camera.position.toArray(), target: controls.target.toArray(),
+    producer: { name: 'Panel Workbench', build: buildIdentity() } });
+}
+function acceptedProjectChange(type = 'edit', detail = {}) {
+  state.project = advanceProjectRevision(state.project);
+  state.recoveryEnabled = true;
+  state.latestAcceptedEdit = { type, revision: state.project.revision, ...detail };
+  state.openedCalculation = null;
+  projectUI?.changed();
+  updateWorkspaceChrome();
+}
+function installProject(study = null, { startup = false, recovered = false } = {}) {
+  state.project = study?.project ?? createProjectMetadata();
+  state.lastCalculation = study?.lastCalculation;
+  state.openedCalculation = study?.lastCalculation ?? null;
+  state.comparison = null; state.latestAcceptedEdit = null; state.latestRejection = null;
+  state.recoveryEnabled = !startup;
+  state.downloadedRevision = study && !recovered ? state.project.revision : 0;
+  state.documentUnits = $('model-units').value; state.documentUp = $('model-up').value;
+  $('calculation-comparison').textContent = study ? `Opened ${study.project ? `revision ${study.project.revision}` : 'an earlier study'} · Fitted panels are recalculated by this build.` : '';
+  projectUI?.refresh();
+}
+async function checkpointBeforeReplacement() {
+  cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); cancelGeneration();
+  finishPendingEdit();
+  if (state.recoveryEnabled && !sourceCanSave()) {
+    setStatus('Finish the source edit before replacing this project. The current work is kept.', true);
+    return false;
+  }
+  const identity = `${state.project?.id}:${state.project?.revision}`;
+  if (await projectUI.checkpoint()) return true;
+  if (identity !== `${state.project?.id}:${state.project?.revision}`) return false;
+  // A file that was opened is already external to recovery. A user who has
+  // requested a download can retry replacement after keeping that copy.
+  if (state.recoveryEnabled && state.downloadedRevision === state.project?.revision) return true;
+  setStatus('The current project is kept because local recovery failed. Download the study and keep the file, then retry opening the new project.', true);
+  return false;
+}
+function updateCalculationFeedback(summary) {
+  const prior = state.openedCalculation ?? state.lastCalculation;
+  state.comparison = prior ? compareCalculations(prior.summary, summary) : null;
+  const comparison = state.comparison;
+  const prefix = state.openedCalculation ? `Reopened revision ${state.project.revision} · Saved calculation r${prior.revision}: ${prior.build}. ` : '';
+  $('calculation-comparison').textContent = comparison?.comparable
+    ? `${prefix}${comparison.changedIds.length} panels changed · ${comparison.resolvedIds.length} resolved · ${comparison.newFailedIds.length} newly unresolved.`
+    : `${prefix}${summary.panelCount} panels checked${summary.complete ? '' : ' · Comparison summary limited to 2,000 panels'}.`;
+  state.lastCalculation = { revision: state.project.revision, build: buildIdentity(), summary };
+}
+
 function updateWorkspaceChrome() {
-  $('document-name').textContent = state.name;
+  $('document-name').textContent = `${state.name}${state.recoveryEnabled && state.downloadedRevision !== state.project?.revision ? ' •' : ''}`;
+  $('project-revision').textContent = state.project ? `Revision ${state.project.revision}` : 'New project';
   document.title = `${state.name} — Panel Workbench`;
   $('view-name').textContent = viewNames[state.view];
   $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
@@ -148,6 +212,8 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
   if (!preserveSource) state.sourceSurface = null;
   state.requested++;
   state.solved = false;
+  buildFittingOverlay();
+  $('calculation-comparison').textContent = 'Fitting panels… Accepted source edits can be saved while fitting.';
   state.pending = { id: state.requested, model: newModel ? state.model : undefined,
     size: state.size, variation: state.variation, randomSeed: state.randomSeed, pattern: state.pattern,
     straightness: state.straightness, thickness: state.thickness, roundover: state.roundover,
@@ -180,7 +246,7 @@ worker.onmessage = ({ data }) => {
   }
   state.busy = false;
   if (data.id === state.requested) {
-    if (data.error) { state.solved = false; setStatus(data.error, true); $('loading').hidden = true; }
+    if (data.error) { state.solved = false; $('calculation-comparison').textContent = 'Panel fitting failed. Save the accepted source and settings, or download a feedback report.'; setStatus(data.error, true); $('loading').hidden = true; }
     else {
       if (!drag) state.seeds = data.seeds;
       state.layout = immutableLayout(data.layout);
@@ -195,6 +261,8 @@ worker.onmessage = ({ data }) => {
       state.ready = true;
       state.solved = true;
       state.revision++;
+      updateCalculationFeedback(summarizeCalculation(data.result));
+      if (state.recoveryEnabled) projectUI?.changed();
       if (!directDrag() && !cornerPending) {
         buildCells();
         if (!drag) buildSeeds();
@@ -217,6 +285,7 @@ worker.onerror = error => {
   studyValidations.clear();
   state.busy = false; state.pending = null; state.solved = false;
   $('loading').hidden = true; setBusy(false); updateExportAvailability();
+  $('calculation-comparison').textContent = 'Panel fitting failed. Save the accepted source and settings, or download a feedback report.';
   setStatus(`Could not calculate cells: ${error.message}`, true);
 };
 
@@ -251,7 +320,18 @@ function cellColor(cell) {
   }
   return panelColor(cell.id);
 }
-function explodeDistance() { return state.explode / 100 * state.size * 0.9; }
+let explodedCache = null;
+function explodedOffsets() {
+  if (!state.explode) return new Map();
+  const cells = state.sourceSurface?.cells ?? state.cells;
+  if (!explodedCache || explodedCache.cells !== cells || explodedCache.result !== state.result) {
+    // Solve spacing once per geometry change. Slider motion only interpolates
+    // the same targets, and selecting one part never repacks the others.
+    explodedCache = { cells, result: state.result, full: computeExplodedOffsets({ cells,
+      solids: state.sourceSurface ? [] : state.result?.solids || [], amount: 1, center: state.analysis?.center }) };
+  }
+  return new Map([...explodedCache.full].map(([id, offset]) => [id, offset.map(value => value * (state.explode / 100))]));
+}
 function arrangementCells() { return state.view === 'surface' && state.sourceSurface ? state.sourceSurface.cells : state.cells; }
 function arrangementCorners() { return state.view === 'surface' && state.sourceSurface ? state.sourceSurface.corners : state.result?.corners || []; }
 function canArrange() {
@@ -262,6 +342,7 @@ function graphCentreMode() { return !!state.directBase || !!state.cornerEdits.le
 function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell' || drag?.kind === 'split'; }
 function buildCells() {
   disposeGroup(cellGroup);
+  const offsets = explodedOffsets();
   for (const cell of arrangementCells()) {
     const surface = state.sourceSurface?.cells.find(c => c.id === cell.id) || state.result?.surfaceCells?.find(c => c.id === cell.id) || cell;
     const solid = state.result?.solids?.find(s => s.id === cell.id);
@@ -274,7 +355,7 @@ function buildCells() {
     }));
     mesh.userData.cellId = cell.id;
     mesh.userData.unresolved = unresolved;
-    const offset = vectors(state.view === 'solid' && solid?.plane ? solid.plane.normal : cell.plane.normal).multiplyScalar(explodeDistance());
+    const offset = vectors(offsets.get(cell.id) || [0, 0, 0]);
     mesh.position.copy(offset);
     cellGroup.add(mesh);
     const edges = [];
@@ -298,7 +379,70 @@ function buildCells() {
     }
   }
   junctionGroup.visible = !state.cornerMode;
-  updateReference();
+  updateReference(); buildFittingOverlay(); buildAssemblyGuides();
+}
+function buildAssemblyGuides() {
+  disposeGroup(assemblyGuideGroup);
+  assemblyGuideGroup.visible = $('show-assembly-guides').checked && state.explode > 0 && state.view !== 'reference';
+  if (!assemblyGuideGroup.visible) return;
+  const offsets = explodedOffsets(), scale = Math.max(...state.analysis.dimensions);
+  for (const cell of arrangementCells()) {
+    const solid = state.result?.solids?.find(part => part.id === cell.id);
+    const surface = state.sourceSurface?.cells.find(part => part.id === cell.id) || state.result?.surfaceCells?.find(part => part.id === cell.id) || cell;
+    const physical = state.view === 'solid' && solid?.positions?.length;
+    const positions = state.view === 'surface' ? surface.positions : physical ? solid.positions : cell.flatPositions;
+    const loops = state.view === 'surface' ? surface.loops : physical
+      ? Object.values(solid.caps || {}).flatMap(cap => cap.boundaryLoops || []) : cell.loops;
+    const offset = offsets.get(cell.id) || [0, 0, 0], edges = [], guides = [], ends = [], connected = new Set();
+    for (const loop of loops || []) for (let i = 0; i < loop.length; i++) {
+      const id = loop[i], point = positions[id], next = positions[loop[(i + 1) % loop.length]], previous = positions[loop[(i + loop.length - 1) % loop.length]];
+      if (!point || !next || !previous) continue;
+      edges.push(...point, ...next);
+      if (state.selectedIds.length && !state.selectedIds.includes(cell.id) || connected.has(id)) continue;
+      // Omit samples along straight boundary segments; retain actual turns.
+      const incoming = vectors(point).sub(vectors(previous)), outgoing = vectors(next).sub(vectors(point));
+      if (incoming.lengthSq() > 0 && outgoing.lengthSq() > 0 && incoming.normalize().dot(outgoing.normalize()) > .9999) continue;
+      connected.add(id);
+      const displaced = point.map((value, axis) => value + offset[axis]);
+      guides.push(...point, ...displaced); ends.push(...point, ...displaced);
+    }
+    const addLines = (points, material, kind) => {
+      const lines = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(points, 3)), material);
+      lines.computeLineDistances(); lines.renderOrder = 8;
+      lines.userData.assemblyGuide = kind; lines.userData.cellId = cell.id;
+      assemblyGuideGroup.add(lines);
+    };
+    addLines(edges, new THREE.LineDashedMaterial({ color: '#485462', dashSize: scale * .006, gapSize: scale * .004, depthTest: false, transparent: true, opacity: .6 }), 'assembled');
+    if (guides.length) {
+      addLines(guides, new THREE.LineBasicMaterial({ color: '#98661c', depthTest: false, transparent: true, opacity: .48 }), 'corners');
+      const points = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(ends, 3)),
+        new THREE.PointsMaterial({ color: '#98661c', size: 3, sizeAttenuation: false, depthTest: false, transparent: true, opacity: .85 }));
+      points.userData.assemblyGuide = 'endpoints'; points.userData.cellId = cell.id; points.renderOrder = 9; assemblyGuideGroup.add(points);
+    }
+  }
+}
+function buildFittingOverlay() {
+  disposeGroup(fittingGroup);
+  const available = state.solved && !state.busy && !state.pending && !state.sourceSurface && !drag && !cornerPending;
+  fittingGroup.visible = $('show-fitting').checked && available && state.view !== 'reference' && state.explode === 0;
+  if (!fittingGroup.visible) return;
+  const source = [], fitted = [], shifts = [];
+  for (const cell of state.cells) {
+    if (!cell.fittedShared || state.selectedIds.length && !state.selectedIds.includes(cell.id)) continue;
+    for (const loop of cell.loops || []) for (let i = 0; i < loop.length; i++) {
+      const a = loop[i], b = loop[(i + 1) % loop.length];
+      if (!cell.positions?.[a] || !cell.positions?.[b] || !cell.flatPositions?.[a] || !cell.flatPositions?.[b]) continue;
+      source.push(...cell.positions[a], ...cell.positions[b]);
+      fitted.push(...cell.flatPositions[a], ...cell.flatPositions[b]);
+      shifts.push(...cell.positions[a], ...cell.flatPositions[a]);
+    }
+  }
+  for (const [points, color, dashed] of [[source, '#49515f', true], [fitted, '#0067c5', false], [shifts, '#ca6b08', false]]) {
+    const properties = { color, depthTest: false, transparent: true, opacity: .85 };
+    const material = dashed ? new THREE.LineDashedMaterial({ ...properties, dashSize: Math.max(...state.analysis.dimensions) * .005, gapSize: Math.max(...state.analysis.dimensions) * .003 }) : new THREE.LineBasicMaterial(properties);
+    const line = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(points, 3)), material);
+    line.computeLineDistances(); line.renderOrder = 10; fittingGroup.add(line);
+  }
 }
 function buildSeeds() {
   disposeGroup(seedGroup);
@@ -421,7 +565,21 @@ function fitView(preset = 'iso') {
   const damping = controls.enableDamping;
   controls.enableDamping = false; controls.update(); controls.enableDamping = damping;
   const previousDirection = camera.position.clone().sub(controls.target).normalize();
-  const { center, dimensions } = state.analysis;
+  let { center, dimensions } = state.analysis;
+  let fittingPoints = state.model.vertices;
+  if (state.explode > 0 && state.view !== 'reference' && cellGroup.children.length) {
+    cellGroup.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(cellGroup);
+    if ($('show-assembly-guides').checked) {
+      box.expandByPoint(vectors(state.analysis.center.map((value, axis) => value - state.analysis.dimensions[axis] / 2)));
+      box.expandByPoint(vectors(state.analysis.center.map((value, axis) => value + state.analysis.dimensions[axis] / 2)));
+    }
+    if (!box.isEmpty()) {
+      center = box.getCenter(new THREE.Vector3()).toArray(); dimensions = box.getSize(new THREE.Vector3()).toArray();
+      fittingPoints = [];
+      for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) fittingPoints.push([x, y, z]);
+    }
+  }
   const diagonal = Math.hypot(...dimensions), zUp = $('model-up').value === 'z';
   camera.up.set(0, zUp ? 0 : 1, zUp ? 1 : 0);
   controls._quat.setFromUnitVectors(camera.up, new THREE.Vector3(0, 1, 0));
@@ -436,7 +594,7 @@ function fitView(preset = 'iso') {
   let distance = diagonal * .5;
   // Account for perspective depth and both field-of-view limits. A diagonal
   // multiplier alone crops wide, shallow examples and narrow viewports.
-  for (const position of state.model.vertices) {
+  for (const position of fittingPoints) {
     const point = vectors(position).sub(vectors(center)), depth = point.dot(direction);
     distance = Math.max(distance, depth + Math.abs(point.dot(right)) / horizontal, depth + Math.abs(point.dot(screenUp)) / vertical);
   }
@@ -472,13 +630,15 @@ function buildReference() {
   document.querySelector('.compass-mark').firstChild.textContent = zUp ? 'Z' : 'Y';
   updateReference();
 }
-function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern } = {}) {
+function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern, projectDocument = null, startup = false, recovered = false } = {}) {
   const factor = { mm: 1, cm: 10, m: 1000 }[$('model-units').value];
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
   if (model.vertices.some(p => p.length !== 3) || model.triangles.some(t => t.length !== 3 || t.some(i => !Number.isInteger(i) || i < 0 || i >= model.vertices.length))) throw new Error('The model contains invalid face indices or coordinates.');
   const analysis = analyzeModel(model);
+  installProject(projectDocument, { startup, recovered });
   cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
   $('import-note').textContent = ''; $('import-note').hidden = true;
+  state.documentUnits = $('model-units').value; state.documentUp = $('model-up').value;
   state.rawModel = rawModel; state.name = name; state.model = model; state.analysis = analysis;
   cancelPendingEdit();
   generationSequence++; state.generating = false;
@@ -563,6 +723,8 @@ function updateInspector() {
     ? `${polygon.concaveVertexCount} inward corners in the fitted outline. Concave panels remain allowed.`
     : 'Convexity of the fitted cutting outline; fabrication validity is checked separately.';
   $('selected-fit').textContent = mm(cell.maxDeviation);
+  const metric = state.lastCalculation?.summary.panels.find(panel => panel.id === cell.id);
+  $('selected-corner-shift').textContent = state.solved && !state.sourceSurface ? mm(metric?.sourceCornerDriftMm) : 'Updating…';
   $('selected-gap').textContent = mm(cell.maxSeamGap);
   const seed = state.seeds.find(s => s.id === cell.id);
   $('cell-weight').value = Math.round((seed?.weight ?? 1) * 100);
@@ -613,7 +775,7 @@ function selectCell(id, additive = false) {
     if (object.isMesh) object.material.color.copy(object.userData.unresolved && !selected ? new THREE.Color('#ce8c74') : cellColor(state.cells.find(c => c.id === object.userData.cellId)));
     else { object.material.color.set(selected ? '#245db4' : '#657484'); object.material.opacity = selected ? 1 : .69; }
   }
-  updateInspector();
+  updateInspector(); buildFittingOverlay(); buildAssemblyGuides();
 }
 
 function snapshot() { return { design: captureDesign(state), selectedIds: [...state.selectedIds], selectedCorner: state.selectedCorner }; }
@@ -622,6 +784,7 @@ function recordEdit(before) {
   state.history.push(before);
   if (state.history.length > 30) state.history.shift();
   state.future = [];
+  acceptedProjectChange();
   updateEditAvailability();
 }
 let pendingEdit = null, editTimer = null;
@@ -629,7 +792,13 @@ function cancelPendingEdit() { clearTimeout(editTimer); editTimer = null; pendin
 function finishPendingEdit() {
   const before = pendingEdit?.before, needsSolve = editTimer !== null;
   cancelPendingEdit();
-  if (before) recordEdit(before);
+  if (before) {
+    recordEdit(before);
+    if (state.solved && !state.busy && !state.pending && state.lastCalculation) {
+      state.lastCalculation = { ...state.lastCalculation, revision: state.project.revision };
+      projectUI?.changed();
+    }
+  }
   if (needsSolve) requestLayout();
 }
 function beginEdit(key) {
@@ -682,6 +851,7 @@ function restoreSnapshot(entry) {
   state.selectedIds = [...entry.selectedIds]; state.selected = state.selectedIds.at(-1) ?? null;
   state.selectedCorner = entry.selectedCorner ?? null;
   state.lastLayoutChange = null;
+  acceptedProjectChange('history');
   syncDesignControls(); requestLayout();
 }
 function undoEdit() {
@@ -885,6 +1055,7 @@ async function commitDirectEdit(transaction, before) {
     state.selected = state.selectedIds.at(-1) ?? null;
     state.selectedCorner = change?.survivingCornerId ?? null;
     recordEdit(before);
+    state.latestAcceptedEdit = { ...transaction, revision: state.project.revision };
     const removed = change?.removedCellIds ?? [];
     $('corner-status').textContent = splitting ? `Cell divided. ${panelId(change.newCellId)} added; Undo restores the original.` : merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
       ? `Corner applied · Removed ${removed.map(panelId).join(', ')}. Undo restores them.`
@@ -893,6 +1064,7 @@ async function commitDirectEdit(transaction, before) {
     requestLayout({ preserveSource: true });
   } catch (error) {
     if (sequence !== cornerSequence) return;
+    state.latestRejection = { ...transaction, message: error.message };
     $('corner-status').textContent = `${splitting ? 'Divider' : merging ? 'Merge' : 'Move'} not applied: ${error.message}`;
     setStatus($('corner-status').textContent, true);
   } finally {
@@ -954,7 +1126,7 @@ $('reset-corners').addEventListener('click', () => {
   recordEdit(before); requestLayout();
   $('corner-status').textContent = 'Corners reset. Merged cells are kept.';
 });
-$('allow-cell-removal').addEventListener('change', () => { state.allowCellRemoval = $('allow-cell-removal').checked; });
+$('allow-cell-removal').addEventListener('change', () => { state.allowCellRemoval = $('allow-cell-removal').checked; acceptedProjectChange('preference'); });
 
 // Pointer capture lets a centre be moved without also orbiting the camera.
 let drag = null, down = null, hoverId = null;
@@ -1140,6 +1312,7 @@ function endDrag(event) {
     if (moved.changed) {
       if (moved.kind === 'split') {
         const nextCellId = state.nextCellId++;
+        acceptedProjectChange('reserve-panel-id', { newCellId: nextCellId });
         commitDirectEdit({ type: 'split-cell', cellId: moved.cellId, start: moved.start, end: moved.end, nextCellId }, moved.before);
       } else if (moved.kind === 'cell') commitDirectEdit({ type: 'move-cell', cellId: moved.handle.cellId, target: moved.target }, moved.before);
       else commitCornerMove(moved);
@@ -1166,7 +1339,7 @@ renderer.domElement.addEventListener('pointercancel', endDrag, true);
 function cancelGeneration() {
   if (!state.generating) return;
   generationSequence++; state.generating = false;
-  updateEditAvailability();
+  updateEditAvailability(); updateExportAvailability();
 }
 async function freshLayout({ applySettings = false } = {}) {
   if (state.generating || !state.ready || state.busy || !state.solved || drag || cornerPending) return;
@@ -1187,13 +1360,14 @@ async function freshLayout({ applySettings = false } = {}) {
     if (JSON.stringify(captureDesign(state)) !== JSON.stringify(before.design)) {
       setStatus('The design changed while generating. Choose New arrangement to try again.'); return;
     }
+    state.generating = false;
     Object.assign(state, candidate, { seeds: structuredClone(layout.recipe.seeds), layout: immutableLayout(layout),
       lastLayoutChange: null, selectedCorner: null, selected: null, selectedIds: [] });
     recordEdit(before); syncDesignControls(); updateViewportHint(); requestLayout();
   } catch (error) {
     if (sequence === generationSequence) setStatus(`Arrangement not applied: ${error.message}`, true);
   } finally {
-    if (sequence === generationSequence) { state.generating = false; updateEditAvailability(); }
+    if (sequence === generationSequence) { state.generating = false; updateEditAvailability(); updateExportAvailability(); }
   }
 }
 function showView(view) { document.querySelector(`[data-view="${view}"]`)?.click(); }
@@ -1251,12 +1425,15 @@ $('edit-toggle').addEventListener('click', () => {
 });
 $('show-seeds').addEventListener('change', buildSeeds);
 $('show-original').addEventListener('change', updateReference);
+$('show-fitting').addEventListener('change', buildFittingOverlay);
+$('show-assembly-guides').addEventListener('change', () => { buildAssemblyGuides(); if (state.explode) fitView(null); });
 $('fit-view').addEventListener('click', () => { cancelCornerDrag(); cancelCornerPending(); fitView(null); });
 document.querySelectorAll('[data-camera-view]').forEach(button => button.addEventListener('click', () => {
   cancelCornerDrag(); cancelCornerPending(); fitView(button.dataset.cameraView);
 }));
 document.querySelectorAll('[data-browser-view]').forEach(button => button.addEventListener('click', () => showView(button.dataset.browserView)));
-$('explode').addEventListener('input', () => { cancelCornerDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
+$('explode').addEventListener('input', () => { cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
+$('explode').addEventListener('change', () => fitView(null));
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   cancelCornerDrag(); cancelCornerPending();
   state.view = button.dataset.view;
@@ -1270,8 +1447,16 @@ document.querySelectorAll('[data-color]').forEach(button => button.addEventListe
   document.querySelectorAll('[data-color]').forEach(b => { const active = b.dataset.color === state.color; b.classList.toggle('is-active', active); b.setAttribute('aria-pressed', String(active)); });
   buildCells(); updateStats();
 }));
-$('model-units').addEventListener('change', () => { if (state.rawModel) loadModel(state.rawModel, state.name); });
-$('model-up').addEventListener('change', () => { if (state.model) { buildReference(); fitView(); } });
+$('model-units').addEventListener('change', async () => {
+  if (!state.rawModel) return;
+  const units = $('model-units').value, opening = ++studyOpenRevision;
+  $('model-units').value = state.documentUnits;
+  if (!await checkpointBeforeReplacement() || opening !== studyOpenRevision) return;
+  $('model-units').value = units;
+  loadModel(state.rawModel, state.name);
+  setStatus('Source units changed; a new layout is being prepared. The earlier project remains in Recovery or your downloaded copy.');
+});
+$('model-up').addEventListener('change', () => { if (state.model) { state.documentUp = $('model-up').value; acceptedProjectChange('orientation'); buildReference(); fitView(); } });
 const flipLabel = document.createElement('label'); flipLabel.className = 'checkbox-row';
 const flipInput = document.createElement('input'); flipInput.type = 'checkbox'; flipInput.id = 'flip-outside';
 const flipText = document.createElement('span'); flipText.textContent = 'Flip inside / outside';
@@ -1328,7 +1513,8 @@ function updateExportAvailability() {
   const problems = panelProblems(), problemReason = `${problems.length} panels need repair. Select a panel under Panels to resolve, or use Rhino repair export.`;
   const selected = state.cells.find(c => c.id === state.selected), selectedSolid = solids.find(s => s.id === state.selected);
   $('export-obj').disabled = waiting || state.view === 'reference' || (state.view === 'flat' && invalid) || (state.view === 'solid' && solidInvalid);
-  $('save-study').disabled = waiting;
+  $('save-study').disabled = !sourceCanSave();
+  $('save-study').title = sourceCanSave() ? 'Download the accepted source layout and settings, including while panels refit' : 'Finish the source edit before saving';
   $('export-dxf').disabled = waiting || invalid;
   $('export-dxf').title = waiting ? waitingReason : invalid ? 'Some fitted outlines cross, collapse or cannot be flattened. See Panels to resolve.' : 'Export flat outlines in millimetres';
   $('export-stl').disabled = waiting || !solids.length || solidInvalid;
@@ -1349,15 +1535,16 @@ function updateExportAvailability() {
   updatePanelDiagnostics(waiting);
 }
 async function exportRhino(repair = false) {
+  finishPendingEdit();
   updateExportAvailability();
   if ($(repair ? 'export-rhino-repair' : 'export-rhino').disabled) return;
-  const name=state.name;
+  const name=state.name, projectRevision=state.project.revision;
   exportingRhino=true;updateExportAvailability();setStatus(repair ? 'Preparing all panels and diagnostic notes for Rhino repair…' : 'Preparing linked Rhino panel blocks…');
   try {
     const {bytes}=await rhinoOperation({operation:repair ? 'repair-export' : 'export',cells:state.cells,solids:state.result.solids,sourceCells:repair ? state.result.surfaceCells : undefined,
-      options:{name,up:$('model-up').value,carved:state.carve,rowWidth:Number($('export-row-width').value),spacing:Number($('export-spacing').value)}});
+      options:{name,project:state.project,build:buildIdentity(),up:$('model-up').value,carved:state.carve,rowWidth:Number($('export-row-width').value),spacing:Number($('export-spacing').value)}});
     verifyRhino6Export(bytes);
-    download(`${name}-${repair ? 'repair' : 'production'}-rhino6.3dm`,bytes,'application/octet-stream');
+    download(`${name}-r${projectRevision}-${repair ? 'repair' : 'production'}-rhino6.3dm`,bytes,'application/octet-stream');
     setStatus(repair ? 'Rhino 6 repair file exported · File version verified · Every panel included with geometry type and diagnostic notes · Repair candidates before fabrication' : 'Rhino 6 blocks exported · File version verified · Assembly and flat parts share definitions · Nominal outlines; prepare toolpaths in CAM');
   } catch(error) {setStatus(`Could not export Rhino: ${error.message}`,true);}
   finally {exportingRhino=false;updateExportAvailability();}
@@ -1369,7 +1556,7 @@ $('export-obj').addEventListener('click', () => {
   try {
     const flat = state.view !== 'surface';
     if (flat && state.cells.some(c => !c.valid)) { setStatus('Some cells cannot form a single flat panel yet. Try smaller cells or export the cell layout.', true); return; }
-    const content = state.view === 'solid' ? exportSolidsOBJ(state.result.solids, { explode: explodeDistance() }) : exportCellsOBJ(flat ? state.cells : state.result.surfaceCells || state.cells, { flat, explode: explodeDistance() });
+    const content = state.view === 'solid' ? exportSolidsOBJ(state.result.solids, { offsets: explodedOffsets() }) : exportCellsOBJ(flat ? state.cells : state.result.surfaceCells || state.cells, { flat, offsets: explodedOffsets() });
     download(`${state.name}-${state.view === 'solid' ? 'solid-panels' : flat ? 'flat-panels' : 'cell-layout'}.obj`, content, 'text/plain');
     setStatus(`Exported ${flat ? 'flat candidates' : 'surface cells'} matching this view${state.explode ? ' · Includes the exploded positions' : ''}`);
   } catch (error) { setStatus(error.message, true); }
@@ -1379,7 +1566,7 @@ $('export-dxf').addEventListener('click', () => {
   catch (error) { setStatus(error.message, true); }
 });
 $('export-stl').addEventListener('click', () => {
-  try { download(`${state.name}-solid-panels.stl`, exportSolidsSTL(state.result.solids, { explode: explodeDistance() }), 'model/stl'); setStatus('Exported the solid geometry shown in the preview · Units: mm'); }
+  try { download(`${state.name}-solid-panels.stl`, exportSolidsSTL(state.result.solids, { offsets: explodedOffsets() }), 'model/stl'); setStatus('Exported the solid geometry shown in the preview · Units: mm'); }
   catch (error) { setStatus(error.message, true); }
 });
 $('export-selected-dxf').addEventListener('click', () => {
@@ -1393,20 +1580,35 @@ $('export-selected-obj').addEventListener('click', () => {
   try {
     const cell = state.cells.find(c => c.id === state.selected); if (!cell) return;
     const solid = state.result.solids.find(s => s.id === cell.id);
-    const content = state.view === 'solid' ? exportSolidsOBJ([solid], { explode: explodeDistance() }) : exportCellsOBJ([cell], { flat: true, explode: explodeDistance() });
+    const content = state.view === 'solid' ? exportSolidsOBJ([solid], { offsets: explodedOffsets() }) : exportCellsOBJ([cell], { flat: true, offsets: explodedOffsets() });
     download(`${state.name}-${panelId(cell.id)}${state.view === 'solid' ? '-solid' : '-flat'}.obj`, content, 'text/plain');
     setStatus(`Exported ${panelId(cell.id)} ${state.view === 'solid' ? 'solid' : 'flat panel'}`);
   } catch (error) { setStatus(error.message, true); }
 });
 $('save-study').addEventListener('click', () => {
-  if (!state.solved || state.busy || state.pending || cornerPending || directDrag()) return;
+  if (!sourceCanSave()) return;
   finishPendingEdit();
   try {
-    const study = createStudy(state, { units: $('model-units').value, up: $('model-up').value,
-      camera: camera.position.toArray(), target: controls.target.toArray() });
-    download(`${state.name}-study.json`, JSON.stringify(study), 'application/json');
-    setStatus('Saved the model, surface layout and editing settings');
+    const study = currentStudy();
+    if (!study) return;
+    const text = serializeStudy(study);
+    download(`${state.name}-r${state.project.revision}-study.json`, text, 'application/json');
+    state.downloadedRevision = state.project.revision;
+    updateWorkspaceChrome();
+    setStatus(`Download requested · Revision ${state.project.revision} · Accepted source and settings${!state.solved ? ' · Panel calculation still pending' : ''}`);
   } catch (error) { setStatus(`Could not save study: ${error.message}`, true); }
+});
+$('download-feedback').addEventListener('click', () => {
+  finishPendingEdit();
+  const report = createDiagnosticReport({ project: state.project, build: buildIdentity(), settings: { ...state, units: state.documentUnits, up: state.documentUp },
+    result: state.solved && !state.busy && !state.pending ? state.result : null,
+    previousSummary: state.openedCalculation?.summary, selectedIds: state.selectedIds,
+    latestAcceptedEdit: state.latestAcceptedEdit, latestRejection: state.latestRejection });
+  download(`panel-feedback-r${state.project?.revision ?? 0}.json`, JSON.stringify(report, null, 2), 'application/json');
+  setStatus('Feedback report download requested · Contains build, revision, panel IDs and checks; no source mesh, coordinates or project name. Add what you expected and what happened when sharing it.');
+});
+window.addEventListener('beforeunload', event => {
+  if (state.recoveryEnabled && state.downloadedRevision !== state.project?.revision) { event.preventDefault(); event.returnValue = ''; }
 });
 $('load-study').addEventListener('click', () => $('study-file').click());
 function validateDesignGeometry(inputs) {
@@ -1422,26 +1624,33 @@ function validateStudyGeometry(study) {
     model: { vertices: study.rawModel.vertices.map(point => point.map(value => value * factor)), triangles: study.rawModel.triangles },
     seeds: study.seeds, size: study.size, pattern: study.pattern, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
 }
+async function openStudyDocument(study, { recovered = false, checkpoint = true } = {}) {
+  const opening = ++studyOpenRevision;
+  const currentRevision = state.project?.revision, currentId = state.project?.id;
+  setStatus('Checking the saved surface layout…');
+  const { layout } = await validateStudyGeometry(study);
+  if (opening !== studyOpenRevision) return;
+  if (currentRevision !== state.project?.revision || currentId !== state.project?.id) throw new Error('The current project changed while opening. Try opening again; the current work is kept.');
+  if (checkpoint && !await checkpointBeforeReplacement() || opening !== studyOpenRevision) return;
+  cancelPendingEdit();
+  $('model-units').value = study.units; $('model-up').value = study.up;
+  Object.assign(state, captureDesign(study));
+  state.allowCellRemoval = study.allowCellRemoval; $('allow-cell-removal').checked = study.allowCellRemoval;
+  $('size').min = Math.max(1, study.size / 3); $('size').max = study.size * 3;
+  syncDesignControls();
+  loadModel(study.rawModel, study.name, { seeds: study.seeds, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout, directBase: study.directBase, nextCellId: study.nextCellId, preserveSettings: true, projectDocument: study, recovered });
+  document.querySelector(`[data-view="${study.view}"]`)?.click();
+  if (study.camera && study.target) { camera.position.fromArray(study.camera); controls.target.fromArray(study.target); controls.update(); }
+}
 $('study-file').addEventListener('change', async event => {
   const file = event.target.files[0]; if (!file) return;
   const opening = ++studyOpenRevision;
   try {
-    if (file.size > 30e6) throw new Error('Choose a study smaller than 30 MB.');
+    assertStudySize(file.size);
     const study = readStudy(await file.text());
     if (opening !== studyOpenRevision) return;
-    setStatus('Checking the saved surface layout…');
-    const { layout } = await validateStudyGeometry(study);
-    if (opening !== studyOpenRevision) return;
-    cancelPendingEdit();
-    $('model-units').value = study.units; $('model-up').value = study.up;
-    Object.assign(state, captureDesign(study));
-    state.allowCellRemoval = study.allowCellRemoval; $('allow-cell-removal').checked = study.allowCellRemoval;
-    $('size').min = Math.max(1, study.size / 3); $('size').max = study.size * 3;
-    syncDesignControls();
-    loadModel(study.rawModel, study.name, { seeds: study.seeds, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout, directBase: study.directBase, nextCellId: study.nextCellId, preserveSettings: true });
-    document.querySelector(`[data-view="${study.view}"]`)?.click();
-    if (study.camera && study.target) { camera.position.fromArray(study.camera); controls.target.fromArray(study.target); controls.update(); }
-  } catch (error) { if (opening === studyOpenRevision) setStatus(`Could not open study: ${error.message}`, true); }
+    await openStudyDocument(study);
+  } catch (error) { setStatus(`Could not open study: ${error.message}`, true); }
   event.target.value = '';
 });
 async function openMesh(file) {
@@ -1454,6 +1663,7 @@ async function openMesh(file) {
     setStatus(rhino ? 'Reading Rhino source geometry…' : 'Reading OBJ mesh…');
     const parsed = rhino ? (await rhinoOperation({operation:'import',bytes:await file.arrayBuffer()})).model : parseOBJ(await file.text());
     if (opening !== studyOpenRevision) return;
+    if (!await checkpointBeforeReplacement() || opening !== studyOpenRevision) return;
     $('model-units').value = 'mm';
     if (rhino) $('model-up').value = 'z';
     loadModel(parsed, file.name.replace(/\.(obj|3dm)$/i, ''));
@@ -1472,7 +1682,7 @@ $('example-select').value = DEFAULT_EXAMPLE_ID;
 function describeExample() { $('example-select').title = exampleCatalog.find(example => example.id === $('example-select').value)?.description ?? ''; }
 $('example-select').addEventListener('change', describeExample);
 $('load-example').title = 'Load the selected example as a new study';
-async function loadExample(id) {
+async function loadExample(id, { startup = false } = {}) {
   const opening = ++studyOpenRevision;
   try {
     const example = exampleCatalog.find(value => value.id === id);
@@ -1487,6 +1697,8 @@ async function loadExample(id) {
       model = parseOBJ(source);
     } else model = createExample(id);
     if (opening !== studyOpenRevision) return;
+    setStatus(`Opening ${example.name}…`);
+    if (!startup && (!await checkpointBeforeReplacement() || opening !== studyOpenRevision)) return;
     // Loading an example is an explicit document replacement, like opening a
     // mesh. Invalidate older asynchronous imports before installing this model.
     cancelPendingEdit(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
@@ -1501,7 +1713,7 @@ async function loadExample(id) {
       button.classList.toggle('is-active', active); button.setAttribute('aria-pressed', String(active));
     });
     $('example-select').value = id; describeExample();
-    loadModel(model, example.name, { initialSize: example.initialSize, pattern: example.pattern });
+    loadModel(model, example.name, { initialSize: example.initialSize, pattern: example.pattern, startup });
     syncDesignControls(); updateViewportHint();
   } catch (error) {
     if (opening !== studyOpenRevision) return;
@@ -1528,4 +1740,6 @@ window.cellStudy = { get state() { return state; }, get camera() { return camera
   projectCellCentre(id) { const handle = seedGroup.children.find(child => child.userData.seedId === id); if (!handle) return null; const p = handle.position.clone().project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectCorner(id) { const corner = arrangementCorners().find(c => c.id === id); if (!corner) return null; const position = cornerDisplayPosition(corner, state.view, camera.position.toArray()); if (!position) return null; const p = vectors(position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectSeed(id) { const seed = state.seeds.find(s => s.id === id); if (!seed) return null; const p = vectors(seed.position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; } };
-loadExample(DEFAULT_EXAMPLE_ID);
+projectUI = initProjectUI({ getStudy: () => state.recoveryEnabled && !pendingEdit ? currentStudy() : null,
+  openStudy: study => openStudyDocument(readStudy(study), { recovered: true }), download, setStatus });
+loadExample(DEFAULT_EXAMPLE_ID, { startup: true });

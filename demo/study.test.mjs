@@ -28,6 +28,12 @@ function authoredFixture() {
   return state;
 }
 
+// New transport metadata must not change any field of a legacy authored study.
+function asVersion5(study) {
+  const { project, producer, engines, requiredFeatures, lastCalculation, nextCellId, ...design } = study;
+  return { ...design, version: 5 };
+}
+
 test('saved corner and merged designs round trip with independent source, edits, settings and camera', () => {
   const original = fixture();
   const saved = readStudy(original);
@@ -192,8 +198,8 @@ test('new studies save the exact source layout independently of derived panels',
   const original = authoredFixture();
   const saved = createStudy(original, { units: original.units, up: original.up, camera: original.camera, target: original.target });
   const reopened = readStudy(JSON.stringify(saved));
-  assert.equal(saved.version, 5);
-  assert.deepEqual(reopened, original);
+  assert.equal(saved.version, 6);
+  assert.deepEqual(asVersion5(reopened), original);
   const snapshot = captureDesign(original);
   original.layout.vertices[0].position[0] += 1;
   original.layout.cells[0].positions[0][0] += 1;
@@ -223,7 +229,7 @@ test('legacy studies can open but cannot save a source document until their layo
   assert.equal(readStudy(old).layout, null);
   assert.throws(() => createStudy(old, { units: old.units, up: old.up }), /layout/);
   const solved = authoredFixture();
-  assert.equal(createStudy(solved, { units: solved.units, up: solved.up }).version, 5);
+  assert.equal(createStudy(solved, { units: solved.units, up: solved.up }).version, 6);
 });
 
 test('version 4 snapshots open unchanged with direct editing disabled and removal allowed by default', () => {
@@ -247,7 +253,7 @@ test('version 5 retains graph authority, the exact reset baseline and the remova
   const original = directFixture();
   const saved = createStudy(original, { units: original.units, up: original.up, camera: original.camera, target: original.target });
   const reopened = readStudy(JSON.stringify(saved));
-  assert.deepEqual(reopened, original);
+  assert.deepEqual(asVersion5(reopened), original);
   assert.equal(saved.layout.authority, 'graph');
   assert.equal(saved.allowCellRemoval, false);
   assert.deepEqual(saved.directBase, authoredFixture().layout);
@@ -321,7 +327,7 @@ test('structured generator settings save and reopen independently of future draf
     const original = structuredFixture(type);
     const saved = createStudy(original, { units: original.units, up: original.up, camera: original.camera, target: original.target });
     const reopened = readStudy(JSON.stringify(saved)), history = captureDesign(original);
-    assert.deepEqual(reopened, original);
+    assert.deepEqual(asVersion5(reopened), original);
     assert.equal(saved.layout.recipe.engine, 'structured-v1');
     assert.deepEqual(saved.layout.recipe.pattern, original.pattern);
     original.pattern.angle = 75; original.pattern.frequency = 4; original.pattern.type = 'organic';
@@ -371,7 +377,7 @@ test('regularized settings survive saves, independent history copies and direct 
   state.layout.recipe = layoutRecipe(state);
   const before = captureDesign(state);
   const saved = createStudy(state, { units: state.units, up: state.up, camera: state.camera, target: state.target });
-  assert.deepEqual(readStudy(JSON.stringify(saved)), state);
+  assert.deepEqual(asVersion5(readStudy(JSON.stringify(saved))), state);
   assert.equal(saved.layout.recipe.engine, 'regularized-surface-v1');
   state.pattern.regularity = .3;
   assert.equal(before.pattern.regularity, .8);

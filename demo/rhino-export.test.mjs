@@ -118,6 +118,54 @@ function repairFixture() {
       {id:42,valid:false,positions:[],triangles:[],issues:['Could not build solid from crossing outline.']}],sourceCells:[source]};
 }
 
+test('Rhino 6 production and repair files retain project revision and build on documents, blocks and every member/reference', () => {
+  const options = { up: 'z', project: { id: 'project-public-fixture-001', revision: 7, name: 'not-exported', path: '/private/project.3dm' }, build: '2026-10-30T16:00:00Z test-build' };
+  const before = structuredClone(options), production = folded(), repair = repairFixture();
+  for (const [kind, bytes] of [
+    ['production', exportProduction3DM(production.cells, production.solids, rhino, options)],
+    ['repair', exportRepair3DM(repair.cells, repair.solids, repair.sourceCells, rhino, options)],
+  ]) {
+    const file = rhino.File3dm.fromByteArray(bytes);
+    try {
+      assert.equal(file.archiveVersion, 60);
+      const expected = { 'panel-workbench-export': kind, 'panel-workbench-project-id': options.project.id,
+        'panel-workbench-project-revision': '7', 'panel-workbench-build': options.build };
+      for (const [key, value] of Object.entries(expected)) assert.equal(file.strings().getvalue(key), value);
+      const targets = [];
+      for (let i = 0; i < file.instanceDefinitions().count; i++) {
+        const definition = file.instanceDefinitions().get(i); targets.push(definition);
+        for (const member of definitionGeometry(file, definition)) targets.push(member.geometry, member.attributes);
+        const pair = references(file).filter(ref => ref.geometry.parentIdefId === definition.id);
+        assert.equal(pair.length, 2, 'provenance cannot split shared definitions');
+        for (const ref of pair) targets.push(ref.geometry, ref.attributes);
+      }
+      for (const target of targets) for (const [key, value] of Object.entries(expected)) assert.equal(target.getUserString(key), value);
+      const metadata = Array.from({ length: file.strings().count }, (_, i) => file.strings().get(i));
+      assert.doesNotMatch(JSON.stringify(metadata), /not-exported|private/);
+    } finally { file.delete(); }
+  }
+  assert.deepEqual(options, before);
+});
+
+test('Rhino provenance stays optional and rejects malformed identities before writing', () => {
+  const production = folded(), repair = repairFixture();
+  const exporters = [options => exportProduction3DM(production.cells, production.solids, rhino, options),
+    options => exportRepair3DM(repair.cells, repair.solids, repair.sourceCells, rhino, options)];
+  for (const write of exporters) {
+    const file = rhino.File3dm.fromByteArray(write({}));
+    try {
+      assert.equal(file.archiveVersion, 60);
+      for (const key of ['panel-workbench-project-id', 'panel-workbench-project-revision', 'panel-workbench-build']) assert.ok(!file.strings().getvalue(key));
+    } finally { file.delete(); }
+    for (const project of [null, [], {}, { id: 'ok', revision: 0 }, { id: 'ok', revision: 1.5 },
+      { id: 'ok', revision: Number.MAX_SAFE_INTEGER + 1 }, { id: '/private/file', revision: 1 },
+      { id: 'private\nvalue', revision: 1 }, { id: 'x'.repeat(129), revision: 1 }]) {
+      assert.throws(() => write({ project }), /valid project ID/);
+    }
+    for (const build of ['', 'x'.repeat(257), '/private/build', 'file:\\private', 'bad\nvalue', {}, '<script>']) assert.throws(() => write({ build }), /build identifier/);
+  }
+});
+
 test('repair layout preserves every panel and its original candidate or source geometry with rigid inspection placements',()=>{
   const input=repairFixture(),before=structuredClone(input);
   for(const up of ['y','z']) {

@@ -33,7 +33,7 @@
       </div>
       <div class="document-title">
         <strong id="document-name">Untitled study</strong>
-        <span> — Panel Workbench</span>
+        <span> — Panel Workbench · <span id="project-revision">New project</span></span>
       </div>
       <div class="header-context">
         <span class="status-dot"></span>
@@ -230,6 +230,8 @@
           <div class="ribbon-group-content">
             <div class="ribbon-stack ribbon-checks">
               <label class="checkbox-row"><input id="show-seeds" type="checkbox" checked=""><span>Cell centres</span></label>
+              <label class="checkbox-row"><input id="show-fitting" type="checkbox"><span>Show fitting changes</span></label>
+              <label class="checkbox-row" title="With panels exploded, show their assembled outlines and matching corners. Select panels to limit the connecting lines."><input id="show-assembly-guides" type="checkbox"><span>Assembly guides</span></label>
               <label class="checkbox-row"><input id="show-original" type="checkbox"><span>Source mesh overlay</span></label>
             </div>
           </div>
@@ -239,7 +241,7 @@
           <div class="ribbon-group-content">
             <div class="ribbon-slider">
               <div class="control-label">
-                <label for="explode">Explode panels</label>
+                <label for="explode" title="Spread panels using their positions, sizes and outward directions. Release to frame the spread; turn on Assembly guides to trace matching corners.">Explode panels</label>
                 <output id="explode-value" for="explode">0<span>%</span></output>
               </div>
               <input id="explode" type="range" min="0" max="100" step="5" value="0">
@@ -433,6 +435,7 @@
                   <dd id="selected-fit">—</dd>
                 </div>
                 <div>
+                  <dt title="Largest displacement between corresponding retained source and fitted boundary vertices; not the full surface deviation.">Corner shift</dt><dd id="selected-corner-shift">—</dd></div><div>
                   <dt>Joint gap</dt>
                   <dd id="selected-gap">—</dd>
                 </div>
@@ -518,6 +521,8 @@
                   <strong id="convex-check">—</strong>
                 </div>
                 <p id="boundary-note" class="boundary-note"><span class="boundary-dot"></span>Source openings preserved</p>
+                <p id="calculation-comparison" class="control-hint" role="status"></p>
+                <p class="control-hint">Show fitting changes: dashed gray is the source, blue the fitted outline, and orange connects corresponding corners. Select cells to limit the overlay.</p>
                 <p id="fit-repair-note" class="control-hint" hidden></p>
                 <p class="fit-explanation">Surface deviation measures the distance between fitted panels and the source mesh.</p>
               </div>
@@ -619,6 +624,18 @@
         </div>
       </main>
     </div>
+    <section class="project-bar" aria-label="Project safety and feedback">
+      <span id="project-status" role="status">Recovery copies are stored in this browser.</span>
+      <button id="recovery-open" type="button" class="button">Recovery</button>
+      <button id="download-feedback" type="button" class="button" title="Download build, revision, panel IDs and checks. Source geometry and project names are excluded.">Download feedback report</button>
+    </section>
+    <dialog id="recovery-dialog" class="recovery-dialog" aria-labelledby="recovery-title">
+      <h2 id="recovery-title">Recover a project</h2>
+      <p>Copies are stored in this browser. Clearing browser storage removes them. Download project files for backups you keep.</p>
+      <p>Opening an older copy retains its revision. Its next edit starts another branch of that project; keep separate downloaded files when comparing alternatives.</p>
+      <div id="recovery-list"></div>
+      <button id="recovery-close" class="button" type="button">Close</button>
+    </dialog>
     <footer class="app-footer">
       <span>Synthetic example · Dimensions in mm</span>
       <span id="build-version">Local development</span>

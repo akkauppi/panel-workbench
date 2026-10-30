@@ -52,6 +52,21 @@ end in `-rhino6.3dm`. If an older exporter returns another version, the download
 is stopped with a message. The published footer identifies the build by its UTC
 date and time; save your study before reopening or refreshing an older page.
 
+Both production and repair exports carry these identifiers in document user text
+and on block definitions, their geometry/attributes and both placed instances:
+
+- `panel-workbench-project-id`: the study's stable project identity.
+- `panel-workbench-project-revision`: the revision used for the exported geometry.
+- `panel-workbench-build`: the application build that produced the file.
+- `panel-workbench-export`: `production` or `repair`.
+
+The app captures that identity when export starts, and includes the revision in
+the filename. Keep the matching study JSON alongside the 3DM. The metadata links
+the two; it does not embed the editable project, synchronize later changes or
+establish that a repaired Rhino mesh still matches the original calculation.
+An expanded manifest with complete settings and panel fingerprints remains
+planned.
+
 | Layer | Contents |
 | --- | --- |
 | Assembly | One instance of each panel in its assembled position |
@@ -128,6 +143,8 @@ authored layout. Use the saved study JSON to resume the Workbench design.
 ## Verification boundary
 
 Native-file serialization tests check block definitions, shared instance IDs,
-units, transforms, geometry, and layout spacing. A manual Rhino open/BlockEdit
+units, transforms, geometry, layout spacing and revision/build metadata on both
+production and repair files. They also check that those files retain the Rhino 6
+archive format. A manual Rhino open/BlockEdit
 check and a CAM check on the intended production setup are still required; those
 have not been verified by the browser or serialization tests.

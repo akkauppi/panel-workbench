@@ -114,7 +114,7 @@ test('saved split studies retain the original recipe and a monotonic counter out
   const state={seeds:f.seeds,layout:result.layout,directBase:f.layout,nextCellId:100,size:500,variation:.3,randomSeed:7,
     rawModel:f.model,name:'Split fixture',view:'surface'};
   const saved=createStudy(state,{units:'mm',up:'z'}),reopened=readStudy(JSON.stringify(saved));
-  assert.equal(saved.version,5);assert.equal(reopened.nextCellId,100);
+  assert.equal(saved.version,6);assert.equal(reopened.nextCellId,100);
   assert.deepEqual(reopened.seeds,f.seeds);assert.deepEqual(reopened.layout.recipe,f.layout.recipe);
   assert.deepEqual(reopened.directBase,f.layout);
   assert.equal('nextCellId' in captureDesign(state),false,'undo snapshots must not rewind the reserved panel IDs');

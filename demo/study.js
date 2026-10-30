@@ -1,5 +1,8 @@
 import { readLayout, layoutRecipe, nextLayoutCellId } from './layout.js';
 import { readPattern } from './pattern.js';
+import { STUDY_VERSION, CURRENT_ENGINES, assertStudySize, utf8Bytes, createProjectMetadata,
+  readProjectMetadata, readProducer, readEngines, requiredStudyFeatures, readRequiredFeatures, readCalculationMetadata } from './project-document.js';
+import { readCalculationSummary } from './project-feedback.js';
 
 // The authored source layout is persistent. Fitted panels and stock solids are
 // derived outputs. Legacy generator inputs remain available to the old tools
@@ -138,8 +141,14 @@ function readCornerEdits(edits, seeds) {
 
 /** Validate a complete save before the caller updates any live application state. */
 export function readStudy(input) {
+  if (typeof input === 'string') assertStudySize(utf8Bytes(input));
   const study = typeof input === 'string' ? JSON.parse(input) : input;
-  if (!study || study.format !== 'sauna-cell-study' || ![1, 2, 3, 4, 5].includes(study.version)) throw new Error('This is not a supported cell study.');
+  if (!study || study.format !== 'sauna-cell-study') throw new Error('This is not a supported cell study.');
+  if (Number.isInteger(study.version) && study.version > STUDY_VERSION) throw new Error(`This project uses file version ${study.version}; this build supports up to version ${STUDY_VERSION}. Open it with a newer compatible Panel Workbench. Keep the original file unchanged.`);
+  if (![1, 2, 3, 4, 5, STUDY_VERSION].includes(study.version)) throw new Error('This is not a supported cell study version. Keep the original file and open it with a compatible Panel Workbench.');
+  // Feature gates apply even if a future writer retains an older outer version.
+  // Required editing semantics must never disappear through a read/save cycle.
+  if (study.requiredFeatures !== undefined || study.version === STUDY_VERSION) readRequiredFeatures(study.requiredFeatures, study);
   if (!['mm', 'cm', 'm'].includes(study.units) || !['y', 'z'].includes(study.up)) throw new Error('The saved study has invalid units or orientation.');
   const seeds = readSeeds(study.seeds);
   const mergeGroups = readGroups(study.version === 1 ? [] : study.mergeGroups, seeds);
@@ -151,7 +160,7 @@ export function readStudy(input) {
   if (study.name !== undefined && typeof study.name !== 'string') throw new Error('The study contains an invalid name.');
   const result = {
     // Versions 1–3 are normalized as a legacy recipe. The worker materializes
-    // their source layout before the document is installed or saved as v5.
+    // their source layout before the document is installed or saved as v6.
     format: 'sauna-cell-study', version: study.version >= 4 ? study.version : 3, name: study.name || 'Opened study',
     rawModel: readModel(study.rawModel, study.units), units: study.units, up: study.up,
     seeds, mergeGroups, cornerEdits, pattern: readPattern(study.pattern),
@@ -164,7 +173,7 @@ export function readStudy(input) {
     minimumThickness: number(study.minimumThickness, 12, 3, 100, 'minimum thickness'),
     flipOutside: boolean(study.flipOutside, 'inside/outside setting'), view,
     layout: study.version >= 4 ? readLayout(study.layout) : null,
-    directBase: study.version === 5 && study.directBase != null ? readLayout(study.directBase) : null,
+    directBase: study.version >= 5 && study.directBase != null ? readLayout(study.directBase) : null,
     allowCellRemoval: boolean(study.allowCellRemoval, 'cell removal setting', true),
   };
   if (result.pattern.type !== 'organic' && result.cornerEdits.length) {
@@ -186,6 +195,14 @@ export function readStudy(input) {
     if(!isId(study.nextCellId)||study.nextCellId<minimum)throw new Error('The study contains a stale or invalid next panel ID.');
     result.nextCellId=study.nextCellId;
   }
+  if (study.version === STUDY_VERSION) {
+    if (study.nextCellId === undefined) throw new Error('The project is missing its next panel ID.');
+    result.project = readProjectMetadata(study.project);
+    result.producer = readProducer(study.producer);
+    result.engines = readEngines(study.engines);
+    result.requiredFeatures = readRequiredFeatures(study.requiredFeatures, result);
+    if (study.lastCalculation !== undefined) result.lastCalculation = readCalculationMetadata(study.lastCalculation, result.project, readCalculationSummary);
+  }
   if (study.camera !== undefined || study.target !== undefined) {
     if (!isPoint(study.camera) || !isPoint(study.target)) throw new Error('The study contains an invalid camera position.');
     result.camera = [...study.camera]; result.target = [...study.target];
@@ -193,12 +210,26 @@ export function readStudy(input) {
   return result;
 }
 
-export function createStudy(state, { units, up, camera, target }) {
+export function createStudy(state, { units, up, camera, target, project, producer, engines, lastCalculation = state.lastCalculation } = {}) {
   if (!state.layout) throw new Error('Wait for the source layout to finish before saving.');
-  return readStudy({
-    ...captureDesign(state), format: 'sauna-cell-study', version: 5, allowCellRemoval: state.allowCellRemoval ?? true,
-    nextCellId: state.nextCellId,
+  const study = {
+    ...captureDesign(state), format: 'sauna-cell-study', version: STUDY_VERSION, allowCellRemoval: state.allowCellRemoval ?? true,
+    nextCellId: state.nextCellId ?? Math.max(nextLayoutCellId(state.layout), nextLayoutCellId(state.directBase), ...state.seeds.map(seed => seed.id + 1)),
     name: state.name, rawModel: state.rawModel, view: state.view,
     units, up, camera, target,
-  });
+    project: project ?? state.project ?? createProjectMetadata(),
+    producer: producer ?? state.producer ?? { name: 'Panel Workbench', build: 'Local development' },
+    engines: engines ?? state.engines ?? CURRENT_ENGINES,
+    ...(lastCalculation !== undefined ? { lastCalculation } : {}),
+  };
+  study.requiredFeatures = requiredStudyFeatures(study);
+  return readStudy(study);
+}
+
+/** The single transport path for downloads and recovery uses the same UTF-8
+ * byte limit as opening. A large valid study cannot become an unreadable save. */
+export function serializeStudy(study) {
+  const text = JSON.stringify(readStudy(study));
+  assertStudySize(utf8Bytes(text));
+  return text;
 }

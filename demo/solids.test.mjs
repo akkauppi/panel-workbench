@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { inspectStockEnvelopes, buildPanelSolids, exportSolidsOBJ, exportSolidsSTL, attachSolidCornerPositions } from './solids.js';
 import { buildCarvedPanels } from './carving.js';
+import { parseOBJ } from './io.js';
 
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
@@ -183,6 +184,59 @@ test('OBJ and STL export the actual rounded solid triangles', () => {
   const obj = exportSolidsOBJ(solids), stl = exportSolidsSTL(solids);
   assert.equal(obj.split('\n').filter(line => line.startsWith('f ')).length, solids[0].triangles.length);
   assert.equal(stl.split('\n').filter(line => line.startsWith('facet normal')).length, solids[0].triangles.length);
+});
+
+test('solid OBJ and STL offsets match panel translations, preserve normals and leave geometry untouched', () => {
+  const solids = buildPanelSolids([
+    cell(3, [[0,0,0],[100,0,0],[100,100,0],[0,100,0]]),
+    cell(8, [[250,0,0],[350,0,0],[350,100,0],[250,100,0]]),
+  ], { thickness: 20, radius: 2 });
+  assert.ok(solids.every(solid => solid.valid));
+  const before = structuredClone(solids), offsets = new Map([[3, [-24,12,30]], [8, [40,-8,-15]]]);
+  const rounded = value => Number(value.toFixed(6));
+  const translated = solid => solid.positions.map(p => p.map((value, axis) => rounded(value + offsets.get(solid.id)[axis])));
+  const obj = exportSolidsOBJ(solids, { offsets, explode: 999 });
+  assert.deepEqual(parseOBJ(obj).vertices, solids.flatMap(translated));
+  assert.match(obj, /o P004\ng P004/); assert.match(obj, /o P009\ng P009/);
+  assert.deepEqual(parseOBJ(exportSolidsOBJ([solids[1]], { offsets })).vertices, translated(solids[1]));
+  const stl = exportSolidsSTL(solids, { offsets, explode: 999 });
+  const vertices = text => [...text.matchAll(/^  vertex (.+)$/gm)].map(match => match[1].split(' ').map(Number));
+  const normals = text => [...text.matchAll(/^facet normal (.+)$/gm)].map(match => match[1].split(' ').map(Number));
+  assert.deepEqual(vertices(stl), solids.flatMap(solid => {
+    const points = translated(solid); return solid.triangles.flatMap(triangle => triangle.map(index => points[index]));
+  }));
+  assert.deepEqual(vertices(exportSolidsSTL([solids[1]], { offsets })), solids[1].triangles.flatMap(triangle => triangle.map(index => translated(solids[1])[index])));
+  const originalNormals = normals(exportSolidsSTL(solids));
+  normals(stl).forEach((normal, index) => assert.ok(Math.hypot(...sub(normal, originalNormals[index])) <= 1e-6, 'A pure translation keeps each facet normal.'));
+  assert.deepEqual(solids, before);
+});
+
+test('solid offsets preserve assembled defaults and unmapped panels retain numeric explode', () => {
+  const solids = buildPanelSolids([
+    cell(3, [[0,0,0],[100,0,0],[100,100,0],[0,100,0]]),
+    cell(8, [[250,0,0],[350,0,0],[350,100,0],[250,100,0]]),
+  ], { thickness: 20, radius: 0 });
+  const zeros = new Map(solids.map(solid => [solid.id, [0,0,0]]));
+  for (const exporter of [exportSolidsOBJ, exportSolidsSTL]) {
+    assert.equal(exporter(solids), exporter(solids, { offsets: zeros }));
+    assert.equal(exporter(solids, { explode: 15 }), exporter(solids, { explode: 15, offsets: new Map() }));
+  }
+  const partial = { explode: 15, offsets: new Map([[3, [0,0,0]]]) };
+  const expected = solids.flatMap(solid => solid.positions.map(p => p.map((value, axis) => value + (solid.id === 3 ? 0 : solid.plane.normal[axis] * 15))));
+  assert.deepEqual(parseOBJ(exportSolidsOBJ(solids, partial)).vertices, expected);
+  const full = exportSolidsSTL(solids, partial);
+  assert.equal(full, exportSolidsSTL(solids, { offsets: new Map([[3, [0,0,0]], [8, solids[1].plane.normal.map(value => value * 15)]]) }));
+});
+
+test('solid exports reject malformed offsets without weakening solid validity checks', () => {
+  const solids = buildPanelSolids([cell(3, [[0,0,0],[100,0,0],[100,100,0],[0,100,0]])], { thickness: 20, radius: 0 });
+  for (const exporter of [exportSolidsOBJ, exportSolidsSTL]) {
+    assert.throws(() => exporter(solids, { offsets: { 3: [1,2,3] } }), /offsets must be a Map/);
+    for (const offset of [null, undefined, [1,2], [1,2,3,4], [1,NaN,3], [1,Infinity,3], ['1',2,3]]) {
+      assert.throws(() => exporter(solids, { offsets: new Map([[3, offset]]) }), /invalid export offset/);
+    }
+    assert.throws(() => exporter([{ ...solids[0], valid: false }], { offsets: new Map([[3, [1,2,3]]]) }), /valid solid|reshaping/);
+  }
 });
 
 test('solid corner handles follow both exact stock offsets and match across folded owners', () => {

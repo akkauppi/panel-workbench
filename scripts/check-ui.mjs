@@ -64,15 +64,37 @@ globalThis.fetch = async input => {
 globalThis.__uiRenderers = [];
 const mockModule = 'qa:three-renderer';
 const localExamplesModule = 'qa:local-examples';
+const recoveryModule = 'qa:project-recovery';
+const actualRecovery = new URL('project-recovery.js', demo).href;
+// Browserless tests use transactional in-memory storage. Chromium separately
+// verifies the actual IndexedDB adapter and reload recovery.
+const recoveryRecords = new Map(), recoveryTexts = new Map();
+let recoveryQueue = Promise.resolve();
+globalThis.__recoveryStorage = {
+  async list() { await recoveryQueue; return structuredClone([...recoveryRecords.values()]); },
+  async read(id) { await recoveryQueue; return recoveryTexts.get(id) ?? null; },
+  commit(decide) {
+    const task = recoveryQueue.then(() => {
+      const plan = decide(structuredClone([...recoveryRecords.values()]));
+      for (const id of plan.remove) { recoveryRecords.delete(id); recoveryTexts.delete(id); }
+      recoveryRecords.set(plan.record.id, structuredClone(plan.record)); recoveryTexts.set(plan.record.id, plan.text);
+      return structuredClone(plan.result);
+    });
+    recoveryQueue = task.catch(() => {}); return task;
+  },
+  async remove(id) { await recoveryQueue; recoveryRecords.delete(id); recoveryTexts.delete(id); }, close() {}
+};
 const actualThree = new URL('vendor/three.module.js', demo).href;
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier === './local-examples.js' && context.parentURL === new URL('app.js', demo).href) return { url: localExamplesModule, shortCircuit: true };
+    if (specifier === './project-recovery.js' && context.parentURL === new URL('project-ui.js', demo).href) return { url: recoveryModule, shortCircuit: true };
     if (specifier === 'three') return { url: mockModule, shortCircuit: true };
     if (specifier.startsWith('three/addons/')) return { url: new URL(`vendor/addons/${specifier.slice('three/addons/'.length)}`, demo).href, shortCircuit: true };
     return next(specifier, context);
   },
   load(url, context, next) {
+    if (url === recoveryModule) return { format: 'module', shortCircuit: true, source: `import {createRecoveryStore as create} from ${JSON.stringify(actualRecovery)}; export function createRecoveryStore(options={}) {return create({...options,storageFactory:()=>globalThis.__recoveryStorage});}` };
     if (url === localExamplesModule) return { format: 'module', shortCircuit: true, source: `export const LOCAL_EXAMPLES = ${JSON.stringify([localExample])};` };
     if (url !== mockModule) return next(url, context);
     return { format: 'module', shortCircuit: true, source: `
@@ -88,6 +110,7 @@ registerHooks({
 });
 
 const validationReplies = [], heldValidationReplies = [], heldFitReplies = [], rhinoExports = [];
+let failNextFitReply = false;
 let holdNextValidationReply = false, holdNextFitReply = false, alterNextFitReply = null, returnNextRhino7Header = false;
 globalThis.Worker = class {
   constructor(path) {
@@ -107,6 +130,7 @@ globalThis.Worker = class {
         const alter = alterNextFitReply; alterNextFitReply = null;
         alter(data.result);
       }
+      if (data.result && failNextFitReply) { failNextFitReply = false; data = { id: data.id, error: 'Synthetic fitting worker failure' }; }
       const deliver = () => queueMicrotask(() => {
         owner.onmessage?.({ data: structuredClone(data) });
         if (data.validationId !== undefined) validationReplies.push(structuredClone(data));
@@ -319,7 +343,7 @@ clickControl('save-study');
 const saved = downloads.at(-1);
 assert.ok(saved?.name.endsWith('-study.json'));
 const savedText = await saved.blob.text(), savedStudy = JSON.parse(savedText);
-assert.equal(savedStudy.version, 5);
+assert.equal(savedStudy.version, 6);
 assert.deepEqual(savedStudy.seeds, saveSeeds);
 assert.deepEqual(savedStudy.layout, saveLayout);
 const reopenRevision = state.revision;
@@ -537,7 +561,7 @@ async function saveStudy() {
   clickControl('save-study');
   assert.equal(downloads.length, before + 1);
   const study = JSON.parse(await downloads.at(-1).blob.text());
-  assert.equal(study.version, 5, 'new saves include the authored layout and its reset baseline');
+  assert.equal(study.version, 6, 'new saves include the authored layout and its reset baseline');
   assert.equal(study.layout?.format, 'panel-source-layout');
   assert.deepEqual(study.layout, state.layout, 'saving preserves the accepted source layout exactly');
   assert.deepEqual(study.directBase, state.directBase);
@@ -749,7 +773,7 @@ assert.deepEqual(currentDesign(), designBeforeFit);
 console.log('PASS fitting, stock and carving settings retain the exact authored source layout');
 
 const completeDesign = currentDesign(), completeStudy = await saveStudy();
-assert.equal(completeStudy.version, 5);
+assert.equal(completeStudy.version, 6);
 assert.deepEqual(completeStudy.mergeGroups, state.mergeGroups);
 await openStudy(completeStudy, 'merged version 5 reopen');
 assert.deepEqual(currentDesign(), completeDesign);
@@ -822,7 +846,7 @@ assert.deepEqual(state.mergeGroups, []);
 assert.deepEqual(state.seeds, stripSeeds);
 assert.deepEqual(state.cornerEdits, [], 'version 1 study opens without corner edits');
 assert.equal(state.layout?.format, 'panel-source-layout', 'version 1 gains its source layout on first solve');
-assert.equal((await saveStudy()).version, 5);
+assert.equal((await saveStudy()).version, 6);
 assert.equal(errors.length, 0, errors.map(error => error.message).join('\n'));
 console.log('PASS merged version 5 save/reopen and version 1/2 migration');
 
@@ -959,6 +983,11 @@ assert.deepEqual(currentDesign(),sequenceStart,'live preview does not author the
 pointer(canvas,'pointerup',seqTo.x,seqTo.y);
 await until(()=>heldFitReplies.length===1&&!!state.sourceSurface,'accept source while first fit is held');
 assert.equal(state.solved,false);assert.equal(state.busy,true);
+assert.equal($('save-study').disabled, false, 'accepted authored source can be saved during a held fit');
+const pendingFitSave = await saveStudy();
+assert.deepEqual(pendingFitSave.layout, state.layout, 'pending-fit save contains current accepted graph');
+assert.equal(pendingFitSave.project.revision, state.project.revision);
+assert.ok(pendingFitSave.lastCalculation.revision < pendingFitSave.project.revision, 'older fit evidence remains explicitly older');
 assert.equal($('corner-toggle').disabled,false,'manual arrangement remains enabled during fitting');
 assert.equal($('export-dxf').disabled,true,'old fitted output cannot be exported');
 const sourceOne=currentDesign();
@@ -1060,7 +1089,7 @@ assert.ok(Math.abs(movedBoundary.position[0] - boundaryCorner.position[0]) > 1, 
 close(state.result.surfaceCells.reduce((sum, cell) => sum + cell.area, 0), 1200 * 1200, 'boundary-edit source coverage');
 const editedCornerDesign = currentDesign(), editedCornerSurface = cornerSourceSnapshot();
 const cornersSaved = await saveStudy();
-assert.equal(cornersSaved.version, 5);
+assert.equal(cornersSaved.version, 6);
 assert.deepEqual(cornersSaved.cornerEdits, state.cornerEdits);
 const beforeOffSurfaceImport = preservedDocument();
 const offSurfaceStudy = structuredClone(cornersSaved);
@@ -1830,7 +1859,7 @@ await expectStaleRhinoExportBlocked('export-rhino');
 const cadCount=downloads.length;
 clickControl('export-rhino');
 await until(()=>downloads.length>cadCount,'native 3DM production download');
-assert.equal(downloads.at(-1).name, `${state.name}-production-rhino6.3dm`);
+assert.equal(downloads.at(-1).name, `${state.name}-r${state.project.revision}-production-rhino6.3dm`);
 assert.equal(rhinoExports.at(-1).options.carved, true);
 assert.deepEqual(rhinoExports.at(-1).solids, state.result.solids, 'native export receives the newly selected carved geometry');
 const production=rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
@@ -1890,7 +1919,7 @@ await expectStaleRhinoExportBlocked('export-rhino-repair');
 const repairDownloadCount = downloads.length;
 clickControl('export-rhino-repair');
 await until(() => downloads.length > repairDownloadCount, 'explicit native repair download');
-assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair-rhino6.3dm');
+assert.equal(downloads.at(-1).name, `repair-diagnostic-fixture-r${state.project.revision}-repair-rhino6.3dm`);
 assert.equal(rhinoExports.at(-1).operation, 'repair-export');
 assert.deepEqual(rhinoExports.at(-1).sourceCells, state.result.surfaceCells, 'repair receives original source patches for missing solids');
 const repairFile = rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
@@ -1924,7 +1953,7 @@ try {
 const shortcutDownloadCount = downloads.length;
 clickControl('export-repair-shortcut');
 await until(() => downloads.length > shortcutDownloadCount, 'diagnostic panel repair shortcut');
-assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair-rhino6.3dm');
+assert.equal(downloads.at(-1).name, `repair-diagnostic-fixture-r${state.project.revision}-repair-rhino6.3dm`);
 
 const repairRevision = state.revision, repairExportCount = rhinoExports.length, pendingDownloads = downloads.length, repairFitCount = heldFitReplies.length;
 holdNextFitReply = true;
@@ -2192,6 +2221,115 @@ clickControl('close-laser');assert.equal($('laser-dialog').open,false);
 await edit(()=>{input('thickness','41');input('thickness','41','change');},'stock update after laser preview');
 assert.equal($('laser-download').disabled,true,'changed source invalidates prepared sheets');
 console.log('PASS laser coupon, model sheet preparation, front/back SVG download, settings and source invalidation');
+
+// Durable document behavior is independent of downstream fitting success.
+await openStudy(splitSaved, 'durable split fixture');
+const durableId = state.project.id, durableRevision = state.project.revision, durableLayout = structuredClone(state.layout);
+failNextFitReply = true;
+input('thickness', '47'); input('thickness', '47', 'change');
+await until(() => !failNextFitReply && !state.busy && !state.pending, 'synthetic fitting failure');
+assert.equal(state.solved, false);
+assert.equal($('save-study').disabled, false, 'failed fitting cannot prevent source saving');
+assert.equal($('export-rhino').disabled, true, 'failure still blocks production export');
+const failedFitSave = await saveStudy();
+assert.equal(failedFitSave.project.id, durableId);
+assert.ok(failedFitSave.project.revision > durableRevision);
+assert.equal(failedFitSave.thickness, 47);
+assert.deepEqual(failedFitSave.layout, durableLayout);
+assert.ok(failedFitSave.lastCalculation.revision < failedFitSave.project.revision);
+await until(() => [...recoveryRecords.values()].some(record => record.projectId === durableId && record.revision === failedFitSave.project.revision), 'recovery stores source despite failed fit');
+await openStudy(failedFitSave, 'reopen source after fitting failure');
+assert.equal(state.solved, true);
+assert.deepEqual(state.layout, durableLayout);
+assert.equal(state.project.id, durableId);
+assert.match($('calculation-comparison').textContent, /Saved calculation r/);
+const revisionBeforeStock = state.project.revision;
+input('thickness', '49');
+await until(() => state.solved && !state.busy && !state.pending, 'fit completes before stock gesture ends');
+await new Promise(resolve => setTimeout(resolve, 800));
+assert.equal(state.project.revision, revisionBeforeStock, 'uncommitted settings do not advance the accepted revision');
+assert.equal([...recoveryTexts.values()].map(text => JSON.parse(text)).some(study => study.project.id === durableId && study.project.revision === revisionBeforeStock && study.thickness === 49), false,
+  'uncommitted settings cannot be recovered under the old revision');
+input('thickness', '49', 'change');
+assert.equal(state.project.revision, revisionBeforeStock + 1);
+await until(() => [...recoveryTexts.values()].map(text => JSON.parse(text)).some(study => study.project.id === durableId && study.project.revision === state.project.revision && study.thickness === 49), 'committed settings receive current recovery revision');
+assert.equal(state.lastCalculation.revision, state.project.revision);
+const revisionBeforeUndo = state.project.revision;
+await edit(() => key('z'), 'durable undo revision');
+assert.equal(state.project.revision, revisionBeforeUndo + 1, 'undo advances identity rather than restoring older revision');
+await edit(() => key('z', { shiftKey: true }), 'durable redo revision');
+assert.equal(state.project.revision, revisionBeforeUndo + 2);
+clickControl('download-feedback');
+const feedback = JSON.parse(await downloads.at(-1).blob.text());
+assert.equal(feedback.format, 'panel-workbench-diagnostic');
+assert.equal(feedback.project.revision, state.project.revision);
+assert.equal(feedback.settings.units, 'mm');
+assert.equal(feedback.settings.up, state.documentUp);
+assert.equal(JSON.stringify(feedback).includes(state.name), false);
+assert.equal(feedback.privacy.includesGeometry, false);
+assert.equal(feedback.calculation.panelCount, state.cells.length);
+$('show-fitting').checked = true; $('show-fitting').dispatchEvent(new Event('change', { bubbles: true }));
+flush();
+const fitLines = globalThis.__uiRenderers[0].scene.children.flatMap(group => group.children || []).filter(object => object.renderOrder === 10);
+assert.equal(fitLines.length, 3, 'source outline, fitted outline and displacement connectors are visible');
+assert.ok(fitLines.every(line => line.geometry.attributes.position.count > 0));
+const guardedProject = structuredClone(state.project);
+await rejectStudyWithoutMutation({ ...failedFitSave, version: 7 }, 'reject unsupported future project');
+assert.deepEqual(state.project, guardedProject, 'future format rejection preserves current project identity');
+console.log('PASS durable revisions, saving/recovery through fitting failure, pending settings isolation, reopen comparison, fitting overlay and private diagnostic report');
+
+// Exploded placement is a presentation transform shared by render and exports.
+escape();
+document.querySelector('[data-view="flat"]').click();
+const { computeExplodedOffsets } = await import(new URL('explode.js', demo).href);
+const beforeExplosion = currentDesign(), explosionProject = structuredClone(state.project), explosionHistory = state.history.length;
+const expectedOffsets = computeExplodedOffsets({ cells: state.cells, solids: state.result.solids, amount: 1, center: state.analysis.center });
+input('explode', 100); input('explode', 100, 'change');
+$('show-assembly-guides').checked = true; $('show-assembly-guides').dispatchEvent(new Event('change', { bubbles: true }));
+flush();
+const displayedMeshes = () => globalThis.__uiRenderers[0].scene.children.flatMap(group => group.children || []).filter(object => object.isMesh && Number.isSafeInteger(object.userData.cellId));
+const assemblyGuides = () => globalThis.__uiRenderers[0].scene.children.flatMap(group => group.children || []).filter(object => object.userData.assemblyGuide);
+for (const mesh of displayedMeshes()) assert.deepEqual(mesh.position.toArray(), expectedOffsets.get(mesh.userData.cellId));
+assert.equal(new Set([...expectedOffsets.values()].map(offset => JSON.stringify(offset))).size, state.cells.length, 'coplanar split panels receive distinct translations');
+const ghost = assemblyGuides().filter(object => object.userData.assemblyGuide === 'assembled');
+assert.equal(ghost.length, state.cells.length);
+assert.ok(ghost.every(object => object.material.isLineDashedMaterial), 'assembled outline uses dashed lines');
+for (const line of assemblyGuides().filter(object => object.userData.assemblyGuide === 'corners')) {
+  const values = line.geometry.attributes.position.array, offset = expectedOffsets.get(line.userData.cellId);
+  assert.ok(values.length >= 6);
+  for (let i = 0; i < values.length; i += 6) for (let axis = 0; axis < 3; axis++) close(values[i + 3 + axis] - values[i + axis], offset[axis], 'guide connects assembled corner to same displaced corner', 1e-3);
+}
+for (const mesh of displayedMeshes()) {
+  const positions = mesh.geometry.attributes.position;
+  for (let i = 0; i < positions.count; i++) {
+    const point = new Vector3().fromBufferAttribute(positions, i).applyMatrix4(mesh.matrixWorld).project(window.cellStudy.camera);
+    assert.ok(Math.abs(point.x) <= 1 && Math.abs(point.y) <= 1 && Math.abs(point.z) <= 1, 'Fit includes the complete exploded arrangement');
+  }
+}
+clickControl('export-obj');
+const explodedOBJ = parseOBJ(await downloads.at(-1).blob.text());
+const explodedExpected = state.cells.flatMap(cell => cell.flatPositions.map(point => point.map((value, axis) => value + expectedOffsets.get(cell.id)[axis])));
+assert.equal(explodedOBJ.vertices.length, explodedExpected.length);
+explodedOBJ.vertices.forEach((point, i) => point.forEach((value, axis) => close(value, explodedExpected[i][axis], 'OBJ matches exploded rendering', 1e-5)));
+// Select a displaced face, not its old assembled position.
+const explodedCell = state.cells[0], firstTriangle = explodedCell.triangles[0];
+const clickPosition = [0, 1, 2].map(axis => firstTriangle.reduce((sum, index) => sum + explodedCell.flatPositions[index][axis] / 3, 0) + expectedOffsets.get(explodedCell.id)[axis]);
+const clickPoint = projectWorld(clickPosition);
+pointer(canvas, 'pointerdown', clickPoint.x, clickPoint.y); pointer(canvas, 'pointerup', clickPoint.x, clickPoint.y);
+assert.equal(state.selected, explodedCell.id);
+assert.ok(assemblyGuides().filter(object => object.userData.assemblyGuide === 'corners').every(object => object.userData.cellId === state.selected), 'selection limits corner connectors');
+assert.equal(assemblyGuides().filter(object => object.userData.assemblyGuide === 'assembled').length, state.cells.length, 'assembled context stays visible');
+const flatOffsets = displayedMeshes().map(mesh => [mesh.userData.cellId, mesh.position.toArray()]);
+document.querySelector('[data-view="solid"]').click();
+assert.deepEqual(displayedMeshes().map(mesh => [mesh.userData.cellId, mesh.position.toArray()]), flatOffsets, 'view changes preserve placement');
+assert.ok(assemblyGuides().some(object => object.userData.assemblyGuide === 'corners'), 'solid guides follow actual cap boundary corners');
+input('explode', 0); input('explode', 0, 'change');
+assert.deepEqual(currentDesign(), beforeExplosion);
+assert.deepEqual(state.project, explosionProject, 'presentation controls never advance the project revision');
+assert.equal(state.history.length, explosionHistory);
+assert.ok(displayedMeshes().every(mesh => mesh.position.lengthSq() === 0));
+assert.equal(assemblyGuides().length, 0, 'guides disappear in the assembled position');
+console.log('PASS size-aware exploded rendering, dashed assembly guides, corner correspondence, selected connectors, camera framing and matching exports');
 
 assert.equal(errors.length, 0, errors.map(error => error.message).join('\n'));
 console.log('Browserless integration PASSED. WebGL rendering and browser layout were not tested.');

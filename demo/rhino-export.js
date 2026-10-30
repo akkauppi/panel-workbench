@@ -11,6 +11,31 @@ const bounds = points => {
 };
 const point = p => Array.isArray(p) && p.length === 3 && p.every(Number.isFinite);
 
+// Trace an exported artifact to an authored project without copying its name,
+// private paths, source data or mutable project object into the Rhino document.
+function exportProvenance(options, kind) {
+  const entries = [['panel-workbench-export', kind]];
+  if (options.project !== undefined) {
+    const project = options.project;
+    if (!project || typeof project !== 'object' || Array.isArray(project) ||
+      typeof project.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(project.id) ||
+      !Number.isSafeInteger(project.revision) || project.revision < 1) {
+      throw new Error('Rhino export needs a valid project ID and positive revision.');
+    }
+    entries.push(['panel-workbench-project-id', project.id], ['panel-workbench-project-revision', String(project.revision)]);
+  }
+  if (options.build !== undefined) {
+    if (typeof options.build !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 ._:+()@-]{0,255}$/.test(options.build)) {
+      throw new Error('Rhino export needs a bounded build identifier without paths or control characters.');
+    }
+    entries.push(['panel-workbench-build', options.build]);
+  }
+  return {
+    document(doc) { for (const [key, value] of entries) doc.strings().set(key, value); },
+    tag(object) { for (const [key, value] of entries) object.setUserString(key, value); return object; },
+  };
+}
+
 /** One physical part per definition. Placement changes are rigid transforms;
  * thickness, mitres and the actual selected carving geometry are preserved. */
 export function buildProductionLayout(cells, solids, options = {}) {
@@ -55,36 +80,41 @@ export function buildProductionLayout(cells, solids, options = {}) {
 }
 
 export function exportProduction3DM(cells, solids, rhino, options = {}) {
+  const provenance = exportProvenance(options, 'production');
   const layout = buildProductionLayout(cells, solids, options), doc = new rhino.File3dm();
   const disposable = [];
   const own = object => { disposable.push(object); return object; };
   try {
+    provenance.document(doc);
     doc.settings().modelUnitSystem = rhino.UnitSystem.Millimeters;
     doc.settings().modelAbsoluteTolerance = 0.01;
     const layer = name => { const value=own(new rhino.Layer());value.name=name;return doc.layers().add(value); };
     const layers = { assembly:layer('Assembly'), flat:layer('Flat layout'), part:layer('Part geometry'), outline:layer('Cutting outlines') };
-    const attrs = (name, layerIndex) => {const a=own(new rhino.ObjectAttributes());a.name=name;a.layerIndex=layerIndex;return a;};
+    const attrs = (name, layerIndex) => {const a=own(new rhino.ObjectAttributes());a.name=name;a.layerIndex=layerIndex;return provenance.tag(a);};
     for(const part of layout.parts) {
       const mesh=own(new rhino.Mesh());mesh.vertices().useDoublePrecisionVertices=true;
       part.positions.forEach(p=>mesh.vertices().addPoint3d(...p));
       part.triangles.forEach(t=>mesh.faces().addTriFace(...t));
       mesh.normals().computeNormals();
+      provenance.tag(mesh);
       const meshAttrs=attrs(`${part.name} full part`,layers.part);
       meshAttrs.setUserString('panel-workbench-carved',String(!!options.carved));
       const geometry=[mesh],attributes=[meshAttrs];
       part.loops.forEach((loop,index)=>{
         const curve=own(new rhino.PolylineCurve([...loop,loop[0]]));
+        provenance.tag(curve);
         const a=attrs(`${part.name} ${index ? `opening ${index}` : 'outer outline'}`,layers.outline);
         a.setUserString('purpose','Nominal fitted-panel boundary projected to the bed plane; not a compensated cutter path or bevel envelope.');
         geometry.push(curve);attributes.push(a);
       });
       const index=doc.instanceDefinitions().add(part.name,'Full panel and nominal outlines. Shared by assembly and flat placement.','','',[0,0,0],geometry,attributes);
       if(index < 0) throw new Error(`Could not create block ${part.name}.`);
-      const definition=doc.instanceDefinitions().get(index);
+      const definition=own(doc.instanceDefinitions().get(index));provenance.tag(definition);
       for(const placement of ['assembly','flat']) {
         const matrix=own(new rhino.Transform(1));
         part[placement].forEach((value,i)=>{matrix[`m${Math.floor(i/4)}${i%4}`]=value;});
         const instance=own(new rhino.InstanceReference(definition.id,matrix)),a=attrs(part.name,layers[placement]);
+        provenance.tag(instance);
         a.setUserString('panel-workbench-placement',placement);
         a.setUserString('panel-workbench-panel',part.name);
         if(!doc.objects().add(instance,a)) throw new Error(`Could not place block ${part.name}.`);
@@ -192,9 +222,11 @@ export function buildRepairLayout(cells, solids, sourceCells, options = {}) {
 }
 
 export function exportRepair3DM(cells, solids, sourceCells, rhino, options = {}) {
+  const provenance=exportProvenance(options,'repair');
   const layout=buildRepairLayout(cells,solids,sourceCells,options),doc=new rhino.File3dm(),disposable=[];
   const own=value=>{disposable.push(value);return value;};
   const tag=(target,part)=>{
+    provenance.tag(target);
     target.setUserString('panel-workbench-export','repair');
     target.setUserString('panel-workbench-panel',part.name);
     target.setUserString('panel-workbench-status',part.status);
@@ -207,6 +239,7 @@ export function exportRepair3DM(cells, solids, sourceCells, rhino, options = {})
     return target;
   };
   try {
+    provenance.document(doc);
     doc.settings().modelUnitSystem=rhino.UnitSystem.Millimeters;doc.settings().modelAbsoluteTolerance=0.01;
     const layer=(name,color)=>{const value=own(new rhino.Layer());value.name=name;if(color)value.color=color;return doc.layers().add(value);};
     const layers={assembly:layer('Assembly'),inspection:layer('Repair layout'),resolved:layer('Resolved parts'),

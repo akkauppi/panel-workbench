@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "description": "Synthetic documents written by the released module versions identified below. Do not regenerate them with current code.",
+  "generator": "generate.mjs",
+  "generatorSha256": "aa9732362e7887f7db48490faf21a32472a4b681ffaf4f0ae10d10fba81d88f8",
+  "fixtures": [
+    {
+      "file": "ed74193-organic.json",
+      "commit": "ed74193c89fd0bf3afe54fc0c9bea0c8d13d4087",
+      "scenario": "organic",
+      "writer": "demo/study.js#createStudy",
+      "sha256": "d1e84dfbc670034047f2bbaffddca45a78656bf16e94d1f438b78d3c227b9f2d",
+      "studyVersion": 5,
+      "layoutVersion": 1,
+      "sourceSha256": "9f620caba1d8ae7113d2c56358f4e95ce882a29917101cbce8f6f8f58173c9ec",
+      "layoutSha256": "1e6901e6aff97845370f6fb607378b22577d2a88a19e4d97b73a4eabfbcc10d6",
+      "directBaseSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "cellIds": [
+        0,
+        1,
+        2
+      ],
+      "nextCellId": null
+    },
+    {
+      "file": "1295306-curved-merge.json",
+      "commit": "1295306fe85ffc7fb4e3816675225ed1eb85f965",
+      "scenario": "curved-merge",
+      "writer": "demo/study.js#createStudy",
+      "sha256": "6d4debe477b5394c47e2f23435593807d0a844fd3cb5b03807b251ca0a0bb47c",
+      "studyVersion": 5,
+      "layoutVersion": 2,
+      "sourceSha256": "260f667e95df6a3ba3654f39112b0ed62ed1db6d9303be3b05099e83d973027f",
+      "layoutSha256": "1dfdbfe53fe151e99b1b73ac7a0be0ef4e8a1bada6ca41751c7eee85e6627848",
+      "directBaseSha256": "c0c02a5c4720c02d9bf69cb1a05cd9f74dae8081a70bc1b019e4e043d1a5d8d0",
+      "cellIds": [
+        0,
+        2
+      ],
+      "nextCellId": null
+    },
+    {
+      "file": "1295306-structured.json",
+      "commit": "1295306fe85ffc7fb4e3816675225ed1eb85f965",
+      "scenario": "structured",
+      "writer": "demo/study.js#createStudy",
+      "sha256": "beea0295f0423f74b50d7c173b5fb401559b4a1c972850d9bf41e9087fd7b48b",
+      "studyVersion": 5,
+      "layoutVersion": 1,
+      "sourceSha256": "9f620caba1d8ae7113d2c56358f4e95ce882a29917101cbce8f6f8f58173c9ec",
+      "layoutSha256": "fe4551e2013c7ac9cb894d41bee2260069a484e2dd1a6373242526905949c7b1",
+      "directBaseSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "cellIds": [
+        9,
+        10,
+        14,
+        15,
+        16,
+        17,
+        21,
+        22,
+        23,
+        27,
+        28,
+        29,
+        30,
+        34,
+        35
+      ],
+      "nextCellId": null
+    },
+    {
+      "file": "18f6da1-split-retired.json",
+      "commit": "18f6da1c7a0d812df7e6d16662b8bd1c99117e68",
+      "scenario": "split-retired",
+      "writer": "demo/study.js#createStudy",
+      "sha256": "b6bf2053fc1f034f86a96e97aeb85a13c1c427d293f7f73749b69230fc96ff09",
+      "studyVersion": 5,
+      "layoutVersion": 3,
+      "sourceSha256": "697f9b663b084605ea5557c9ef0195dea229d442aa2c64b40573be9ab9aaf2de",
+      "layoutSha256": "1aa1a52d3f24c9a7f8c9aba1c01647242c2f0bdcf293f051a666b51b7ff2a3b1",
+      "directBaseSha256": "8908439d77a6212ff0b99bdfc7ee0437967cc8416ce067b00d242ac6a1106207",
+      "cellIds": [
+        0,
+        21
+      ],
+      "nextCellId": 100
+    }
+  ],
+  "compatibilityBaseline": {
+    "formatVersion": 6,
+    "family": "2026-10-30-durable-projects-v6",
+    "sourceBaselineCommit": "18f6da1c7a0d812df7e6d16662b8bd1c99117e68",
+    "provenance": "Written by the v6 candidate before its final release commit. Source hashes identify the exact writer without a self-referential commit hash.",
+    "generator": "generate-v6.mjs",
+    "generatorSha256": "2793671fb0c95cda1c515728b30afaff14925f42443201e21f3ae1e62c236cec",
+    "writerHashes": {
+      "study.js": "2cd7531f5ef23ae38a081d939683d0aadbe18bc08394d85dadc8106c163e2ea9",
+      "project-document.js": "64b4948aa1aa057907e00dcd6a028188fe23102b23cdfe06926c4f1f094cdeb3",
+      "project-feedback.js": "ac76ee1bd8aac98ae86c58d0ddd6c020025b2b6c63ae41f016449a4632a49145"
+    },
+    "fixtures": [
+      {
+        "file": "v6-authored.json",
+        "sourceFixture": "ed74193-organic.json",
+        "sha256": "e83f91f57ad161caaee8f3839cbc57647b8a230f0505f5335071c3caf11fca35",
+        "layoutSha256": "1e6901e6aff97845370f6fb607378b22577d2a88a19e4d97b73a4eabfbcc10d6",
+        "directBaseSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "cellIds": [
+          0,
+          1,
+          2
+        ],
+        "nextCellId": 3,
+        "projectId": "v6-baseline-authored",
+        "projectRevision": 1
+      },
+      {
+        "file": "v6-direct.json",
+        "sourceFixture": "1295306-curved-merge.json",
+        "sha256": "bbbe93d15f4e2e898539e1ef10153390f7bfd651f2c9c894fb5b780f244e8987",
+        "layoutSha256": "1dfdbfe53fe151e99b1b73ac7a0be0ef4e8a1bada6ca41751c7eee85e6627848",
+        "directBaseSha256": "c0c02a5c4720c02d9bf69cb1a05cd9f74dae8081a70bc1b019e4e043d1a5d8d0",
+        "cellIds": [
+          0,
+          2
+        ],
+        "nextCellId": 3,
+        "projectId": "v6-baseline-direct",
+        "projectRevision": 2
+      },
+      {
+        "file": "v6-split.json",
+        "sourceFixture": "18f6da1-split-retired.json",
+        "sha256": "cba1612883b0b52279188a0b865adadbbd8dd5180868e65f85055b89592fc117",
+        "layoutSha256": "1aa1a52d3f24c9a7f8c9aba1c01647242c2f0bdcf293f051a666b51b7ff2a3b1",
+        "directBaseSha256": "8908439d77a6212ff0b99bdfc7ee0437967cc8416ce067b00d242ac6a1106207",
+        "cellIds": [
+          0,
+          21
+        ],
+        "nextCellId": 100,
+        "projectId": "v6-baseline-split",
+        "projectRevision": 1
+      }
+    ]
+  }
+}

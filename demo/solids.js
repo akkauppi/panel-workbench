@@ -573,17 +573,28 @@ export function attachSolidCornerPositions(corners, solids) {
 
 const numeric = value => { if (!Number.isFinite(value)) throw new Error('A solid contains an invalid coordinate.'); return String(Number(value.toFixed(6))); };
 
+// Absolute preview translations replace (rather than add to) normal explosion.
+// Unmapped panels retain the existing numeric explode behavior.
+function solidExportOffset(solid, options, normal, explode) {
+  if (options.offsets === undefined || !options.offsets.has(solid.id)) return mul(normal, explode);
+  const shift = options.offsets.get(solid.id);
+  if (!Array.isArray(shift) || shift.length !== 3 || !shift.every(Number.isFinite)) throw new Error('A solid has an invalid export offset.');
+  return shift;
+}
+
 export function exportSolidsOBJ(solids, options = {}) {
   if (!solids?.length) throw new Error('There are no solid panels to export.');
   if (solids.some(s => !s.valid)) throw new Error('Some solid panels need reshaping before export.');
+  if (options.offsets !== undefined && !(options.offsets instanceof Map)) throw new Error('Panel export offsets must be a Map.');
   const explode = Number(options.explode || 0);
   const lines = ['# Panel Workbench solid panels', '# Units: millimetres', solids.some(s => s.carved) ? '# Flat exterior caps, carved interior faces, and matching joint meshes.' : '# Mitred flat stock with inward edge roundovers.'];
   let offset = 1;
   solids.forEach((solid, index) => {
     const label = `P${String(Number.isInteger(solid.id) ? solid.id + 1 : index + 1).padStart(3, '0')}`;
     const normal = solid.plane?.normal || options.cells?.find(c => c.id === solid.id)?.plane.normal || [0, 0, 0];
+    const shift = solidExportOffset(solid, options, normal, explode);
     lines.push(`o ${label}`, `g ${label}`);
-    for (const p of solid.positions) lines.push(`v ${p.map((v, axis) => numeric(v + normal[axis] * explode)).join(' ')}`);
+    for (const p of solid.positions) lines.push(`v ${p.map((v, axis) => numeric(v + shift[axis])).join(' ')}`);
     for (const t of solid.triangles) lines.push(`f ${t.map(i => i + offset).join(' ')}`);
     offset += solid.positions.length;
   });
@@ -592,11 +603,13 @@ export function exportSolidsOBJ(solids, options = {}) {
 
 export function exportSolidsSTL(solids, options = {}) {
   if (!solids?.length || solids.some(s => !s.valid)) throw new Error('Choose valid solid panels to export.');
+  if (options.offsets !== undefined && !(options.offsets instanceof Map)) throw new Error('Panel export offsets must be a Map.');
   const explode = Number(options.explode || 0), lines = ['solid panels_mm'];
   for (const solid of solids) {
     const direction = solid.plane?.normal || [0, 0, 0];
+    const shift = solidExportOffset(solid, options, direction, explode);
     for (const t of solid.triangles) {
-      const p = t.map(i => add(solid.positions[i], mul(direction, explode)));
+      const p = t.map(i => add(solid.positions[i], shift));
       const normal = unit(cross(sub(p[1], p[0]), sub(p[2], p[0])));
       lines.push(`facet normal ${normal.map(numeric).join(' ')}`, ' outer loop');
       for (const v of p) lines.push(`  vertex ${v.map(numeric).join(' ')}`);

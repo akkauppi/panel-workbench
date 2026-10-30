@@ -73,6 +73,41 @@ test('OBJ export uses actual flat positions and optional preview explosion', () 
   assert.deepEqual(surface.vertices, cell.positions);
 });
 
+test('OBJ preview offsets translate each panel by ID without changing geometry or doubling explode', () => {
+  const other = { ...structuredClone(cell), id: 8, plane: { normal: [0, 1, 0] },
+    positions: cell.positions.map(p => [p[0] + 100, p[1], p[2]]),
+    flatPositions: cell.flatPositions.map(p => [p[0] + 100, p[1], p[2]]) };
+  const cells = [cell, other], before = structuredClone(cells);
+  const offsets = new Map([[0, [30, -4, 12]], [8, [-10, 2, 6]]]);
+  for (const flat of [true, false]) {
+    const exported = exportCellsOBJ(cells, { flat, offsets, explode: 999 });
+    const parsed = parseOBJ(exported);
+    assert.deepEqual(parsed.vertices, cells.flatMap(panel => (flat ? panel.flatPositions : panel.positions)
+      .map(p => p.map((v, axis) => v + offsets.get(panel.id)[axis]))));
+    assert.deepEqual(parsed.triangles, [[0,1,2],[0,2,3],[4,5,6],[4,6,7]]);
+    assert.match(exported, /o P001\ng P001/); assert.match(exported, /o P009\ng P009/);
+    assert.deepEqual(parseOBJ(exportCellsOBJ([other], { flat, offsets })).vertices, parsed.vertices.slice(4), 'Selected export uses the same panel offset as full export.');
+  }
+  assert.deepEqual(cells, before);
+  assert.deepEqual(offsets.get(0), [30, -4, 12]);
+});
+
+test('OBJ unmapped panels retain legacy explode and zero offsets preserve assembled output', () => {
+  const other = { ...structuredClone(cell), id: 8, plane: { normal: [0, 1, 0] } };
+  assert.equal(exportCellsOBJ([cell]), exportCellsOBJ([cell], { offsets: new Map([[0, [0,0,0]]]) }));
+  assert.equal(exportCellsOBJ([cell], { explode: 15 }), exportCellsOBJ([cell], { explode: 15, offsets: new Map() }));
+  const exported = parseOBJ(exportCellsOBJ([cell, other], { explode: 15, offsets: new Map([[0, [0,0,0]]]) }));
+  assert.deepEqual(exported.vertices.slice(0, 4), cell.flatPositions);
+  assert.deepEqual(exported.vertices.slice(4), other.flatPositions.map(p => [p[0], p[1] + 15, p[2]]));
+});
+
+test('OBJ rejects malformed preview offsets before writing invalid coordinates', () => {
+  assert.throws(() => exportCellsOBJ([cell], { offsets: { 0: [1,2,3] } }), /offsets must be a Map/);
+  for (const offset of [null, undefined, [1,2], [1,2,3,4], [1,NaN,3], [1,Infinity,3], ['1',2,3]]) {
+    assert.throws(() => exportCellsOBJ([cell], { offsets: new Map([[0, offset]]) }), /invalid export offset/);
+  }
+});
+
 test('DXF contains millimetre units and closed outer and inner rings', () => {
   const dxf = exportCellsDXF([cell]);
   assert.match(dxf, /\$INSUNITS\r\n70\r\n4\r\n/);
