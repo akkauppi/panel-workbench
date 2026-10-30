@@ -57,6 +57,24 @@ let sourceMesh, grid, seedGeometry, seedMaterial;
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 const worker = new Worker('./worker.js', { type: 'module' });
 const validationWorker = new Worker('./worker.js', { type: 'module' });
+let rhinoWorker = null;
+const rhinoRequests = new Map();
+let rhinoSequence = 0, exportingRhino = false;
+function rhinoOperation(inputs) {
+  if (!rhinoWorker) {
+    rhinoWorker = new Worker('./rhino-worker.js', { type: 'module' });
+    rhinoWorker.onmessage = ({data}) => {
+      const pending=rhinoRequests.get(data.id);rhinoRequests.delete(data.id);
+      if(data.error)pending?.reject(new Error(data.error));else pending?.resolve(data);
+    };
+    rhinoWorker.onerror = error => {
+      for(const pending of rhinoRequests.values())pending.reject(new Error(error.message));
+      rhinoRequests.clear();rhinoWorker.terminate();rhinoWorker=null;
+    };
+  }
+  const id=++rhinoSequence;
+  return new Promise((resolve,reject)=>{rhinoRequests.set(id,{resolve,reject});rhinoWorker.postMessage({id,...inputs});});
+}
 const studyValidations = new Map();
 let validationSequence = 0, studyOpenRevision = 0, generationSequence = 0;
 let cornerPending = null, cornerSequence = 0;
@@ -114,6 +132,7 @@ function setBusy(busy) {
   $('loading').hidden = !busy || state.ready;
   $('stage').classList.toggle('is-calculating', busy);
   for (const id of ['export-obj', 'export-dxf', 'export-stl', 'export-selected-dxf', 'export-selected-obj', 'save-study']) $(id).disabled = busy || !state.cells.length;
+  updateExportAvailability();
   updateEditAvailability();
 }
 function requestLayout({ fresh = false, newModel = false, preserveSource = false } = {}) {
@@ -445,6 +464,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
   if (model.vertices.some(p => p.length !== 3) || model.triangles.some(t => t.length !== 3 || t.some(i => !Number.isInteger(i) || i < 0 || i >= model.vertices.length))) throw new Error('The model contains invalid face indices or coordinates.');
   const analysis = analyzeModel(model);
+  $('import-note').textContent = ''; $('import-note').hidden = true;
   state.rawModel = rawModel; state.name = name; state.model = model; state.analysis = analysis;
   cancelPendingEdit();
   cancelCornerDrag(); cancelCornerPending();
@@ -1121,12 +1141,27 @@ function updateExportAvailability() {
   $('export-dxf').disabled = waiting || invalid;
   $('export-dxf').title = invalid ? 'Some cells fold or split when flattened. Move their centres or reduce the cell size.' : 'Export flat outlines in millimetres';
   $('export-stl').disabled = waiting || !solids.length || solidInvalid;
+  $('export-rhino').disabled = waiting || exportingRhino || invalid || solidInvalid || solids.length !== state.cells.length;
+  $('export-rhino').title = 'Named shared blocks: assembled parts and flat full-thickness copies. Uses current carving settings.';
   $('export-stl').title = solidInvalid ? 'Some solid panels need adjustment. Select a resolved panel to export it individually.' : 'Export the solid panel meshes';
   $('export-selected-dxf').disabled = waiting || !selected?.valid;
   $('export-selected-obj').disabled = waiting || (state.view === 'solid' ? !selectedSolid?.valid : !selected?.valid);
   $('export-obj').title = state.view === 'surface' ? 'Export the current cells on the reference surface' : 'Export fitted flat panel candidates';
   $('export-obj').childNodes.forEach(n => { if (n.nodeType === Node.TEXT_NODE && n.textContent.trim()) n.textContent = state.view === 'surface' ? '3D cell layout ' : state.view === 'solid' ? '3D solid panels ' : '3D flat panels '; });
 }
+$('export-rhino').addEventListener('click', async () => {
+  updateExportAvailability();
+  if ($('export-rhino').disabled) return;
+  const name=state.name;
+  exportingRhino=true;updateExportAvailability();setStatus('Preparing linked Rhino panel blocks…');
+  try {
+    const {bytes}=await rhinoOperation({operation:'export',cells:state.cells,solids:state.result.solids,
+      options:{name,up:$('model-up').value,carved:state.carve,rowWidth:Number($('export-row-width').value),spacing:Number($('export-spacing').value)}});
+    download(`${name}-production.3dm`,bytes,'application/octet-stream');
+    setStatus('Rhino blocks exported · Assembly and flat parts share definitions · Nominal outlines; prepare toolpaths in CAM');
+  } catch(error) {setStatus(`Could not export Rhino: ${error.message}`,true);}
+  finally {exportingRhino=false;updateExportAvailability();}
+});
 $('export-obj').addEventListener('click', () => {
   try {
     const flat = state.view !== 'surface';
@@ -1210,14 +1245,19 @@ async function openMesh(file) {
   if (!file) return;
   const opening = ++studyOpenRevision;
   try {
-    if (!file.name.toLowerCase().endsWith('.obj')) throw new Error('Choose an OBJ mesh file.');
-    if (file.size > 20e6) throw new Error('Choose an OBJ smaller than 20 MB for this demo.');
-    const parsed = parseOBJ(await file.text());
+    const rhino = /\.3dm$/i.test(file.name);
+    if (!rhino && !/\.obj$/i.test(file.name)) throw new Error('Choose a Rhino 3DM or OBJ source file.');
+    if (file.size > (rhino ? 60e6 : 20e6)) throw new Error(`Choose a ${rhino ? '3DM smaller than 60 MB' : 'OBJ smaller than 20 MB'}.`);
+    setStatus(rhino ? 'Reading Rhino source geometry…' : 'Reading OBJ mesh…');
+    const parsed = rhino ? (await rhinoOperation({operation:'import',bytes:await file.arrayBuffer()})).model : parseOBJ(await file.text());
     if (opening !== studyOpenRevision) return;
     $('model-units').value = 'mm';
-    loadModel(parsed, file.name.replace(/\.obj$/i, ''));
+    if (rhino) $('model-up').value = 'z';
+    loadModel(parsed, file.name.replace(/\.(obj|3dm)$/i, ''));
+    $('import-note').hidden = false;
+    $('import-note').textContent = rhino ? `Rhino source converted to mm. ${(parsed.warnings || []).join(' ')}` : 'OBJ has no reliable units. Check Model settings.';
     document.querySelector('.model-settings').open = true;
-  } catch (error) { setStatus(`Could not open mesh: ${error.message}`, true); }
+  } catch (error) { if(opening === studyOpenRevision) setStatus(`Could not open mesh: ${error.message}`, true); }
 }
 $('import-model').addEventListener('click', () => $('mesh-file').click());
 $('mesh-file').addEventListener('change', event => { openMesh(event.target.files[0]); event.target.value = ''; });

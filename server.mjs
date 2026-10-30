@@ -6,7 +6,7 @@ import os from 'node:os';
 
 const defaultDemoRoot = fileURLToPath(new URL('./demo/', import.meta.url));
 const defaultPrivateRoot = fileURLToPath(new URL('./private/', import.meta.url));
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.obj': 'text/plain; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8' };
+const types = { '.wasm': 'application/wasm', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.obj': 'text/plain; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8' };
 const within = (root, path) => path.startsWith(root.endsWith(sep) ? root : root + sep);
 const localConfigError = () => new Error('The local example configuration is invalid.');
 

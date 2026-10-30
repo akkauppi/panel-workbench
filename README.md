@@ -31,3 +31,7 @@ This repository is self-contained: app source is in demo/, serving code in serve
 Surface partitions, jointly fitted flat panels, and thick solids are separate stages. Shared edges remain matched; fitting may offset panels from the reference shell. Some strongly folded regions cannot use the current local editing chart. Check planarity, surface deviation, stock thickness, and solid validity. Outlines are not optimized sheet nesting or CNC toolpaths. Fasteners, grain, assembly sequence, tool access, and all inter-panel collisions are not solved.
 
 The gallery uses procedural synthetic examples. No private reference models, saved studies, credentials, or previous project history are included. Third-party Three.js licensing is in demo/vendor/THREE-LICENSE.txt.
+
+## Rhino files and production blocks
+
+Use **Open mesh** for a Rhino `.3dm` containing mesh geometry or closed coplanar source curves. **Export → Rhino production · 3DM** writes each valid full part as one named block definition with an assembled and a flat instance. The actual carving setting is preserved. Read the [Rhino workflow](docs/rhino-workflow.md) for supported source objects, shared-block editing, and CAM preparation limits. Native file reading/writing uses bundled rhino3dm 8.35.0 (MIT); see demo/vendor/rhino3dm/NOTICE.txt.

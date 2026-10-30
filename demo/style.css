@@ -100,6 +100,7 @@ button { transition: background-color .1s, border-color .1s; }
 .segmented button.is-active { background: var(--accent-tint); color: #244e78; }
 .file-type { font: 10px var(--mono); color: #677585; }
 .export-section .ribbon-large { width: 138px; flex-direction: row; gap: 5px; }
+.export-layout-field input { width: 90px; min-height: 24px; padding: 2px 5px; border: 1px solid #b7c2cc; background: white; font-size: 11px; }
 .fabrication-note { display: flex; align-items: flex-start; width: 275px; padding: 0 8px; gap: 7px; color: var(--muted); }
 .fabrication-note svg { width: 16px; height: 16px; margin-top: 2px; }
 .fabrication-note p { margin: 0; font-size: 11px; line-height: 1.5; }
@@ -305,3 +306,11 @@ input[type="range"]::-moz-range-thumb { width: 7px; height: 11px; border: 1px so
   .app-footer > span:last-child { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+
+/* Native popovers stay above the scrolling ribbon and work with keyboard input. */
+.info-button { display:inline-flex; vertical-align:middle; align-items:center; justify-content:center; padding:1px; margin-left:4px; border:0; background:transparent; color:#41617f; }
+.info-button svg { width:15px; height:15px; }
+.format-info { width:min(450px,calc(100vw - 32px)); max-height:75vh; overflow:auto; margin:auto; padding:18px; border:1px solid #9eafbf; background:white; color:#31465a; font-size:13px; line-height:1.5; }
+.format-info h2 { margin:0 28px 12px 0; font-size:16px; }
+.format-info p { margin:10px 0; }
+.info-close { position:absolute; top:5px; right:8px; border:0; background:transparent; font-size:22px; color:#41617f; }

@@ -1,0 +1,8 @@
+rhino3dm 8.35.0, published by Robert McNeel & Associates.
+https://github.com/mcneel/rhino3dm/tree/8.35.0
+https://www.npmjs.com/package/rhino3dm/v/8.35.0
+
+rhino3dm.module.js is the unmodified rhino3dm.module.min.js from that npm package.
+rhino3dm.wasm is the matching unmodified WASM file.
+Package SHA-1: bdc136e78ba974a5e04c989e6921101350dd4c8b
+Licence: LICENSE.txt (MIT).

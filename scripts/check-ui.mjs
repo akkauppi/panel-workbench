@@ -85,7 +85,7 @@ registerHooks({
   }
 });
 
-const validationReplies = [], heldValidationReplies = [], heldFitReplies = [];
+const validationReplies = [], heldValidationReplies = [], heldFitReplies = [], rhinoExports = [];
 let holdNextValidationReply = false, holdNextFitReply = false;
 globalThis.Worker = class {
   constructor(path) {
@@ -107,6 +107,7 @@ globalThis.Worker = class {
   }
   postMessage(data) {
     const copy = structuredClone(data);
+    if (data.operation === 'export') rhinoExports.push(copy);
     this.ready.then(() => setTimeout(() => {
       try { this.context.onmessage({ data: copy }); }
       catch (error) { this.onerror?.(error); }
@@ -1742,6 +1743,62 @@ for (const id of ['export-obj', 'export-dxf', 'export-stl', 'export-selected-obj
   assert.ok((await downloads.at(-1).blob.text()).length > 100);
 }
 console.log('PASS convexity labels match geometry and valid concave panels still export OBJ, DXF and STL');
+
+// Native CAD uses a separate worker and binary downloads, preserving the selected geometry.
+await openStudy(cornerStudy, 'Rhino production fixture');
+const {loadRhino}=await import(new URL('rhino-runtime.js',demo).href),rhino=await loadRhino();
+assert.equal($('export-rhino').disabled,false);
+for (const setting of ['carving', 'thickness']) {
+  const revision = state.revision, exportCount = rhinoExports.length, downloadCount = downloads.length, fitReplyCount = heldFitReplies.length;
+  holdNextFitReply = true;
+  if (setting === 'carving') {
+    $('carve-inner').checked = true;
+    $('carve-inner').dispatchEvent(new Event('change', { bubbles: true }));
+  } else input('thickness', state.thickness + 5);
+  assert.equal(state.solved, false, `${setting} invalidates the current solid geometry immediately`);
+  assert.equal($('export-rhino').disabled, true, `${setting} blocks Rhino export before the next solve`);
+  // dispatchEvent reaches the handler even on a disabled button, checking its
+  // own guard as well as the ordinary browser disabled-button behavior.
+  $('export-rhino').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  if (setting === 'thickness') input('thickness', state.thickness, 'change');
+  await until(() => heldFitReplies.length > fitReplyCount, `hold ${setting} geometry before Rhino export`);
+  assert.equal(rhinoExports.length, exportCount, `${setting} cannot start an export with stale solids`);
+  assert.equal(downloads.length, downloadCount, `${setting} cannot download stale solids`);
+  assert.equal($('export-rhino').disabled, true, `${setting} stays blocked until the new result arrives`);
+  heldFitReplies[fitReplyCount].deliver();
+  await until(() => state.revision > revision && state.solved, `resolve ${setting} for Rhino export`);
+  assert.equal($('export-rhino').disabled, false, `${setting} enables export of the newly resolved solids`);
+}
+const cadCount=downloads.length;
+clickControl('export-rhino');
+await until(()=>downloads.length>cadCount,'native 3DM production download');
+assert.equal(rhinoExports.at(-1).options.carved, true);
+assert.deepEqual(rhinoExports.at(-1).solids, state.result.solids, 'native export receives the newly selected carved geometry');
+const production=rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
+assert.equal(production.instanceDefinitions().count,state.cells.length);
+assert.equal(production.archiveVersion,70,'Rhino production supports Rhino 7 and 8');
+for (let i = 0; i < production.objects().count; i++) {
+  const object = production.objects().get(i), geometry = object.geometry();
+  if (geometry.objectType === rhino.ObjectType.Mesh) {
+    assert.equal(object.attributes().getUserString('panel-workbench-carved'), 'true');
+  }
+}
+production.delete();
+assert.equal($('import-info').getAttribute('popover'),'');
+assert.equal($('export-info').getAttribute('popover'),'');
+assert.match($('export-info').textContent,/BlockEdit/);
+assert.match($('import-info').textContent,/coplanar/);
+const incoming=new rhino.File3dm();incoming.settings().modelUnitSystem=rhino.UnitSystem.Centimeters;
+const curve=new rhino.PolylineCurve([[0,0,0],[120,0,0],[120,120,0],[0,120,0],[0,0,0]]),cadAttrs=new rhino.ObjectAttributes();
+incoming.objects().add(curve,cadAttrs);
+const cadBytes=incoming.toByteArray(),oldRevision=state.revision;
+incoming.delete();curve.delete();cadAttrs.delete();
+loadFile('mesh-file',{name:'rhino-source.3dm',size:cadBytes.length,arrayBuffer:async()=>cadBytes.buffer});
+await until(()=>state.revision>oldRevision&&state.solved,'Rhino planar curve source import');
+assert.equal($('model-units').value,'mm');assert.equal($('model-up').value,'z');
+close(Math.max(...state.rawModel.vertices.map(p=>p[0])),1200,'Rhino centimetres normalize to mm');
+assert.match($('import-note').textContent,/planar surface/);
+console.log('PASS native Rhino production download, 3DM planar source import, units and format help');
 
 assert.equal(errors.length, 0, errors.map(error => error.message).join('\n'));
 console.log('Browserless integration PASSED. WebGL rendering and browser layout were not tested.');

@@ -51,10 +51,10 @@
       <section id="ribbon-panel-file" class="ribbon-panel" role="tabpanel" data-ribbon-panel="file" aria-labelledby="ribbon-tab-file" hidden="">
         <div class="ribbon-group">
           <div class="ribbon-group-content">
-            <button id="import-model" class="ribbon-command ribbon-large" type="button" aria-label="Open OBJ mesh" title="Open OBJ mesh"><svg><use href="#i-folder"></use></svg><span>Open mesh</span></button>
+            <button id="import-model" class="ribbon-command ribbon-large" type="button" aria-label="Open OBJ or Rhino 3DM source" title="Open OBJ or Rhino 3DM source"><svg><use href="#i-folder"></use></svg><span>Open mesh</span></button>
             <button id="load-study" class="ribbon-command ribbon-large" type="button" aria-label="Open saved study" title="Open saved study"><svg><use href="#i-folder"></use></svg><span>Open study</span></button>
           </div>
-          <div class="ribbon-group-caption">Open</div>
+          <div class="ribbon-group-caption">Open <button class="info-button" type="button" popovertarget="import-info" aria-label="About source import"><svg><use href="#i-info"></use></svg></button></div>
         </div>
         <div class="ribbon-group ribbon-note-group">
           <div class="ribbon-group-content">
@@ -69,7 +69,7 @@
           <div class="ribbon-group-content">
             <div class="ribbon-note">
               <strong>Start from a surface</strong>
-              <span>Open an OBJ, drop it into the model view, or choose a Study Browser example.</span>
+              <span>Open an OBJ or Rhino 3DM, drop it into the model view, or choose a Study Browser example.</span>
             </div>
           </div>
           <div class="ribbon-group-caption">Source geometry</div>
@@ -263,11 +263,25 @@
       <section id="ribbon-panel-export" class="ribbon-panel" role="tabpanel" data-ribbon-panel="export" aria-labelledby="ribbon-tab-export" hidden="">
         <div class="ribbon-group export-section">
           <div class="ribbon-group-content">
+            <button id="export-rhino" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Rhino production <span class="file-type">3DM</span></button>
             <button id="export-obj" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>3D panels <span class="file-type">OBJ</span></button>
             <button id="export-stl" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Solid panels <span class="file-type">STL</span></button>
             <button id="export-dxf" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Flat outlines <span class="file-type">DXF</span></button>
           </div>
-          <div class="ribbon-group-caption">Entire layout</div>
+          <div class="ribbon-group-caption">Entire layout <button class="info-button" type="button" popovertarget="export-info" aria-label="About export object types"><svg><use href="#i-info"></use></svg></button></div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-field export-layout-field">
+              <label for="export-row-width">Row width (mm)</label>
+              <input id="export-row-width" type="number" min="1" value="2440">
+            </div>
+            <div class="ribbon-field export-layout-field">
+              <label for="export-spacing">Part spacing (mm)</label>
+              <input id="export-spacing" type="number" min="1" value="60">
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Rhino flat placement</div>
         </div>
         <div class="ribbon-group">
           <div class="ribbon-group-content">
@@ -308,7 +322,26 @@
       </div>
       <span id="ribbon-selection-context" class="selection-context">No selection</span>
     </div>
-    <input id="mesh-file" type="file" accept=".obj,text/plain" hidden="">
+
+    <div id="import-info" class="format-info" popover role="note" aria-labelledby="import-info-title">
+      <button class="info-close" type="button" popovertarget="import-info" popovertargetaction="hide" aria-label="Close import information">×</button>
+      <h2 id="import-info-title">What can I import?</h2>
+      <p><strong>Rhino .3dm:</strong> visible meshes, including meshes inside nested blocks. Document units are converted to millimetres; Rhino's Z axis stays vertical.</p>
+      <p><strong>Rhino surfaces and polysurfaces:</strong> their saved render meshes are used. If those are missing, run Mesh in Rhino and export the resulting mesh as .3dm. Trims and openings must be retained.</p>
+      <p><strong>Rhino curves:</strong> when the file has only curves, use one closed planar outer boundary and optional coplanar closed openings. Polylines are exact; curved outlines are approximated within 0.1 mm. Open curves and general 3D curve networks need a surface or mesh created in Rhino first. Curves alongside meshes are ignored.</p>
+      <p><strong>OBJ:</strong> polygon mesh surfaces. Check source units after import.</p>
+      <p><strong>Study JSON:</strong> use Open study to restore editable panel arrangements and settings. Importing CAD geometry creates a new source; it does not restore the previous editing history. Imports stay in your browser.</p>
+    </div>
+    <div id="export-info" class="format-info" popover role="note" aria-labelledby="export-info-title">
+      <button class="info-close" type="button" popovertarget="export-info" popovertargetaction="hide" aria-label="Close export information">×</button>
+      <h2 id="export-info-title">What objects are exported?</h2>
+      <p><strong>Rhino production .3dm (Rhino 7/8):</strong> one named block definition per panel, such as P001. Each contains the full panel mesh and closed nominal outline curves. Two instances share it: one assembled, one lying flat beside the assembly with its bottom at Z = 0.</p>
+      <p><strong>Your selected geometry:</strong> thickness, mitres and rounding are retained. Carving is included only when enabled. Flat placement keeps the full thickness. These are meshes inside genuine Rhino blocks, not reconstructed smooth NURBS solids.</p>
+      <p><strong>Linked editing:</strong> Rhino BlockEdit updates both instances. Moving an instance changes only that placement. Editing an outline curve does not rebuild the panel mesh or its bevels.</p>
+      <p><strong>Production preparation:</strong> rows provide spacing, not sheet nesting. Outlines are nominal panel boundaries, not bevel envelopes or compensated cutter paths. Check stock, orientation and tool access, then create toolpaths in CAM.</p>
+      <p><strong>OBJ:</strong> meshes for the current view. <strong>STL:</strong> triangulated solids; import as mm. <strong>DXF:</strong> loose flat outline polylines and panel labels, without linked blocks. <strong>Study JSON:</strong> the editable app design.</p>
+    </div>
+    <input id="mesh-file" type="file" accept=".obj,.3dm,text/plain,application/octet-stream" hidden="">
     <input id="study-file" type="file" accept=".json,application/json" hidden="">
     <div class="workbench">
       <aside class="left-dock controls" aria-label="Properties and Study Browser">
@@ -473,7 +506,8 @@
               <summary><svg><use href="#i-cell"></use></svg>Source model</summary>
               <div class="browser-source-info">
                 <span id="model-name" class="model-name">Synthetic example</span>
-                <span id="mesh-note" class="model-detail">Choose an example or open an OBJ mesh.</span>
+                <span id="mesh-note" class="model-detail">Choose an example or open an OBJ or Rhino 3DM.</span>
+                <p id="import-note" class="control-hint" role="status" hidden></p>
               </div>
             </details>
             <div class="example-picker">
@@ -505,7 +539,7 @@
           <div id="mesh-drop" class="mesh-drop" hidden="">
             <svg><use href="#i-folder"></use></svg>
             <strong>Open mesh</strong>
-            <span>Drop an OBJ file here</span>
+            <span>Drop an OBJ or Rhino 3DM file here</span>
           </div>
           <div class="viewport-label">
             <span class="eyebrow">MODEL</span>
