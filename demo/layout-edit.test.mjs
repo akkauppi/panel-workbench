@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateCellLayout, generateSeeds, rebuildSurfaceCells } from './geometry.js';
 import { captureLayout, restoreLayout, layoutRecipe } from './layout.js';
-import { transactLayout, previewCornerMove, layoutCornerCandidates, createCornerSketch } from './layout-edit.js';
+import { transactLayout, previewCornerMove, layoutCornerCandidates, layoutCellHandle, createCornerSketch } from './layout-edit.js';
+import { Triangle, Vector3 } from './vendor/three.core.js';
 import { fitSharedPanels } from './fitted.js';
 import { wavyGrid } from './test-fixtures.mjs';
 
@@ -189,4 +190,111 @@ test('sketches identify a crossing before commit and boundary previews follow th
   const target=[boundary.position[0]+20,0,0],preview=createCornerSketch(f.model,f.layout,boundary.id)(target);
   assert.equal(preview.issue,null);
   assert.ok(preview.segments.some(p=>distance(p,target)<1e-5));
+});
+
+function nearestSource(model,point) {
+  const query=new Vector3(...point),candidate=new Vector3();let best=Infinity,result;
+  for(const face of model.triangles) {
+    new Triangle(...face.map(id=>new Vector3(...model.vertices[id]))).closestPointToPoint(query,candidate);
+    const error=candidate.distanceToSquared(query);if(error<best){best=error;result=candidate.toArray();}
+  }
+  return result;
+}
+function boundaryDistance(cell,point) {
+  let best=Infinity;
+  for(const loop of cell.loops)for(let i=0;i<loop.length;i++) {
+    const a=cell.positions[loop[i]],b=cell.positions[loop[(i+1)%loop.length]],d=b.map((x,k)=>x-a[k]),length=d.reduce((sum,x)=>sum+x*x,0);
+    const t=Math.max(0,Math.min(1,d.reduce((sum,x,k)=>sum+x*(point[k]-a[k]),0)/(length||1)));
+    best=Math.min(best,distance(point,a.map((x,k)=>x+d[k]*t)));
+  }
+  return best;
+}
+
+test('cell moves translate the authored shape and shared junctions while retaining unrelated cells and provenance',()=>{
+  const f=fixture(Array.from({length:25},(_,id)=>[120+(id%5)*240,120+Math.floor(id/5)*240,0]));
+  const before=structuredClone(f.layout),handle=layoutCellHandle(f.layout,12),delta=[10,5,0],target=handle.position.map((x,k)=>x+delta[k]);
+  const result=transactLayout(f.model,f.layout,{type:'move-cell',cellId:12,target});
+  assert.ok(distance(result.change.handlePosition,target)<1e-5);
+  assert.equal(result.layout.authority,'graph');assert.equal(result.change.movedCellId,12);
+  assert.deepEqual(result.change.removedCellIds,[]);assert.deepEqual(result.change.collapsedEdgeIds,[]);
+  assert.equal(result.change.affectedCellIds.length,7);assert.ok(result.change.affectedCellIds.includes(12));
+  assert.deepEqual(result.layout.recipe,before.recipe);
+  assert.deepEqual(result.surface.cells.map(c=>c.id),f.surface.cells.map(c=>c.id));
+  assert.ok(result.surface.stats.coverageError<1e-10);assert.equal(result.surface.stats.invalidCellCount,0);
+  for(const corner of f.layout.corners.filter(c=>handle.cornerIds.includes(c.id))) {
+    const vertex=f.layout.vertices.find(v=>distance(v.position,corner.position)<1e-5);
+    assert.ok(result.change.movedVertexIds.includes(vertex.id));
+    assert.ok(distance(result.layout.vertices.find(v=>v.id===vertex.id).position,corner.position.map((x,k)=>x+delta[k]))<1e-5);
+  }
+  for(const cell of f.layout.cells) {
+    const after=result.layout.cells.find(c=>c.id===cell.id);
+    assert.deepEqual(after.seed,cell.seed);assert.deepEqual(after.memberSeedIds,cell.memberSeedIds);
+    if(!result.change.affectedCellIds.includes(cell.id)){assert.deepEqual(after.positions,cell.positions);assert.deepEqual(after.triangles,cell.triangles);}
+  }
+  // Retessellation may add subdivisions; it must preserve every authored bend.
+  const original=f.layout.cells.find(c=>c.id===12),moved=result.layout.cells.find(c=>c.id===12);
+  for(const loop of original.loops)for(const id of loop)assert.ok(boundaryDistance(moved,original.positions[id].map((x,k)=>x+delta[k]))<1e-4);
+  for(const loop of moved.loops)for(const id of loop)assert.ok(boundaryDistance(original,moved.positions[id].map((x,k)=>x-delta[k]))<1e-4);
+  assert.deepEqual(f.layout,before);
+  handle.position[0]=-1;handle.cornerIds.length=0;
+  assert.ok(layoutCellHandle(f.layout,12).position[0]>0);assert.ok(layoutCellHandle(f.layout,12).cornerIds.length>0);
+});
+
+test('cell moves keep the original outer corners and openings while boundary junctions slide',()=>{
+  for(const hole of [false,true]) {
+    const f=fixture(four,{hole}),before=structuredClone(f.layout),handle=layoutCellHandle(f.layout,0);
+    const result=transactLayout(f.model,f.layout,{type:'move-cell',cellId:0,target:handle.position.map((x,k)=>x+[5,2,0][k])});
+    const fixed=[[0,0,0],[1200,0,0],[1200,1200,0],[0,1200,0],...(hole?[[400,400,0],[600,400,0],[600,600,0],[400,600,0]]:[])];
+    for(const point of fixed)assert.ok(result.layout.vertices.some(v=>distance(v.position,point)<1e-5));
+    for(const corner of result.layout.corners.filter(c=>c.boundary))assert.ok(corner.position[0]===0||corner.position[0]===1200||corner.position[1]===0||corner.position[1]===1200||(hole&&(Math.abs(corner.position[0]-400)<1e-5||Math.abs(corner.position[0]-600)<1e-5||Math.abs(corner.position[1]-400)<1e-5||Math.abs(corner.position[1]-600)<1e-5)));
+    assert.equal(result.surface.cells.length,f.surface.cells.length);assert.ok(result.surface.stats.coverageError<1e-10);
+    if(hole)for(const cell of result.surface.cells)for(const tri of cell.triangles){const p=[0,1].map(k=>tri.reduce((sum,id)=>sum+cell.positions[id][k],0)/3);assert.ok(!(p[0]>400&&p[0]<600&&p[1]>400&&p[1]<600));}
+    assert.deepEqual(f.layout,before);
+  }
+});
+
+test('cell centres remain usable after corner edits and merges, save/reload, and another corner edit',()=>{
+  const f=fixture(four),corner=f.surface.corners.find(c=>!c.boundary);
+  const first=move(f,corner,corner.position.map((x,k)=>x+[20,10,0][k]));
+  const merged=transactLayout(f.model,first.layout,{type:'merge-cells',cellIds:[0,1]}),handle=layoutCellHandle(merged.layout,0);
+  const moved=transactLayout(f.model,merged.layout,{type:'move-cell',cellId:0,target:handle.position.map((x,k)=>x+[5,2,0][k])});
+  assert.deepEqual(moved.surface.cells.find(c=>c.id===0).memberSeedIds,[0,1]);
+  assert.deepEqual(moved.layout.recipe,f.layout.recipe);assert.equal(moved.surface.cells.length,3);
+  const reopened=JSON.parse(JSON.stringify(moved.layout));assert.deepEqual(restoreLayout(f.model,reopened),moved.surface);
+  const next=moved.surface.corners.find(c=>!c.boundary),edited=transactLayout(f.model,reopened,{type:'move-corner',cornerId:next.id,target:next.position.map((x,k)=>x+[1,1,0][k])});
+  assert.equal(edited.change.survivingCornerId,next.id);assert.ok(edited.surface.stats.coverageError<1e-10);
+  assert.deepEqual(edited.layout.recipe,f.layout.recipe);
+});
+
+test('cell handles and moved corners stay on a curved source patch',()=>{
+  const f=fixture(four,{curved:true}),before=structuredClone(f.layout),handle=layoutCellHandle(f.layout,0);
+  assert.ok(distance(handle.position,nearestSource(f.model,handle.position))<1e-6);
+  assert.ok(handle.radius>0);assert.ok(f.layout.cells.find(c=>c.id===0).positions.every(p=>distance(p,handle.position)<handle.radius));
+  const target=nearestSource(f.model,handle.position.map((x,k)=>x+[5,2,0][k]));
+  const result=transactLayout(f.model,f.layout,{type:'move-cell',cellId:0,target});
+  for(const id of result.change.movedVertexIds){const p=result.layout.vertices.find(v=>v.id===id).position;assert.ok(distance(p,nearestSource(f.model,p))<1e-5);}
+  assert.ok(result.surface.stats.coverageError<1e-10);assert.equal(result.surface.stats.invalidCellCount,0);
+  assert.deepEqual(f.layout,before);
+});
+
+test('transporting a wavy cell retains narrow source subdivisions through a saved layout',()=>{
+  const model=wavyGrid({amplitude:180}),seeds=generateSeeds(model,250,.3,1),source=generateCellLayout(model,seeds,{size:250});
+  const layout=captureLayout(model,source,{recipe:layoutRecipe({seeds,size:250})}),handle=layoutCellHandle(layout,7);
+  const target=nearestSource(model,handle.position.map((x,k)=>x+[12,5,0][k]));
+  const moved=transactLayout(model,layout,{type:'move-cell',cellId:7,target});
+  assert.equal(moved.surface.cells.length,source.cells.length);assert.equal(moved.surface.stats.invalidCellCount,0);
+  assert.ok(moved.surface.stats.coverageError<1e-10);
+  assert.deepEqual(moved.layout.recipe,layout.recipe);
+  assert.deepEqual(restoreLayout(model,JSON.parse(JSON.stringify(moved.layout))),moved.surface);
+});
+
+test('cell movement no-op is exact and invalid movement rejects atomically without removing cells',()=>{
+  const f=fixture(Array.from({length:25},(_,id)=>[120+(id%5)*240,120+Math.floor(id/5)*240,0])),before=structuredClone(f.layout),handle=layoutCellHandle(f.layout,12);
+  assert.strictEqual(transactLayout(f.model,f.layout,{type:'move-cell',cellId:12,target:handle.position}).layout,f.layout);
+  for(const [target,reason] of [[[NaN,0,0],/finite/],[[600,600,50],/connected source/],[[1100,1100,0],/connected source|cross|collapse/],[[800,600,0],/cross|collapse|connected source/]])assert.throws(()=>transactLayout(f.model,f.layout,{type:'move-cell',cellId:12,target}),reason);
+  assert.throws(()=>transactLayout(f.model,f.layout,{type:'move-cell',cellId:999,target:[600,600,0]}),/no longer present/);
+  assert.deepEqual(f.layout,before);
+  const single=fixture([[600,600,0]]),only=layoutCellHandle(single.layout,0);
+  assert.strictEqual(transactLayout(single.model,single.layout,{type:'move-cell',cellId:0,target:only.position}).layout,single.layout);
+  assert.throws(()=>transactLayout(single.model,single.layout,{type:'move-cell',cellId:0,target:[610,600,0]}),/no shared corners/);
 });

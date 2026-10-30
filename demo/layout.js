@@ -239,9 +239,9 @@ function locate(prepared, points) {
   if (!found) fail('contains a patch or point outside its source triangles');
   return found;
 }
-function onSegment(p, a, b) {
+function onSegment(p, a, b, tolerance = EPS) {
   const d=sub(b,a), length2=dot(d,d), t=dot(sub(p,a),d)/length2;
-  return t >= -1e-7 && t <= 1+1e-7 && distance(p,a.map((x,k)=>x+t*d[k])) <= EPS;
+  return t >= -1e-7 && t <= 1+1e-7 && distance(p,a.map((x,k)=>x+t*d[k])) <= tolerance;
 }
 
 function graphEdges(cells) {
@@ -312,7 +312,10 @@ function validateCoverage(face, patches) {
   const incidence=new Map();
   for(const [a,b] of segments) {
     const ab=sub(b,a),denom=dot(ab,ab);
-    const split=[...points.entries()].filter(([,p])=>onSegment(p,a,b)).map(([key,p])=>({key,t:dot(sub(p,a),ab)/denom})).sort((a,b)=>a.t-b.t);
+    // Coverage subdivision needs an arithmetic residual tolerance, not the
+    // larger source-attachment tolerance. Otherwise a valid skinny triangle's
+    // opposite vertex is mistaken for an edge sample and counted repeatedly.
+    const split=[...points.entries()].filter(([,p])=>onSegment(p,a,b,1e-7)).map(([key,p])=>({key,t:dot(sub(p,a),ab)/denom})).sort((a,b)=>a.t-b.t);
     for(let i=1;i<split.length;i++) {
       const first=split[i-1].key,last=split[i].key;if(first===last)continue;
       const key=edgeKey(first,last),entry=incidence.get(key)||{a:first,b:last,count:0,balance:0};

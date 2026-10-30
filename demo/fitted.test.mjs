@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateCells, generateSeeds, generateCellLayout, createMergeGroups, rebuildSurfaceCells } from './geometry.js';
 import { fitSharedPanels } from './fitted.js';
+import { buildPanelSolids } from './solids.js';
 import { wavyGrid, foldedOpening } from './test-fixtures.mjs';
 
 function grid(n = 12, hole = false, curved = false) {
@@ -134,4 +135,130 @@ test('merged corners retain exact display mapping and missing anchors never borr
   for (const corner of fitted.corners.slice(0, -1)) assert.deepEqual(corner.flatPosition, fitted.sharedVertices[corner.sharedVertexId]);
   assert.equal(fitted.corners.at(-1).flatPosition, null);
   assert.equal(fitted.corners.at(-1).sharedVertexId, null);
+});
+
+
+test('stock-aware plane repair recovers thick panels without moving source seams or breaking shared flatness', () => {
+  const model = wavyGrid(), source = generateCellLayout(model, generateSeeds(model, 250, .3, 1), { size: 250 });
+  const before = JSON.stringify(source), options = { iterations: 300, thickness: 40 };
+  const cold = fitSharedPanels(source, { ...options, repairBudget: 0 });
+  const coldStock = buildPanelSolids(cold.cells, { thickness: 40, radius: 2 });
+  assert.ok(coldStock.some(stock => !stock.valid), 'fixture must require thick-stock repair');
+  const fitted = fitSharedPanels(source, options), stock = buildPanelSolids(fitted.cells, { thickness: 40, radius: 2 });
+  assert.ok(stock.every(panel => panel.valid), stock.filter(panel => !panel.valid).map(panel => panel.issues).join('; '));
+  assert.ok(fitted.stats.repair.applied);
+  assert.equal(fitted.stats.repair.recoveredPanels, coldStock.filter(panel => !panel.valid).length);
+  assert.ok(fitted.stats.repair.attempts <= 240);
+  assert.ok(fitted.stats.repair.maxVertexMove <= fitted.stats.repair.maxVertexMoveLimit);
+  assert.ok(fitted.stats.maxPlanarityError < 1e-6);
+  assert.equal(JSON.stringify(source), before);
+  checkShared(fitted);
+  const repeated = fitSharedPanels(source, { ...options, previousResult: fitted });
+  assert.deepEqual(repeated.sharedVertices, fitted.sharedVertices, 'cached history cannot select a poorer or different search path');
+  assert.equal(repeated.stats.repair.warmStartAccepted, false);
+});
+
+test('valid stock skips repair and an exhausted budget retains the checked cold fit', () => {
+  const model = wavyGrid({ amplitude: 80 }), source = generateCellLayout(model, generateSeeds(model, 250, .3, 1), { size: 250 });
+  const fitted = fitSharedPanels(source, { thickness: 40 });
+  assert.ok(buildPanelSolids(fitted.cells, { thickness: 40 }).every(stock => stock.valid));
+  assert.equal(fitted.stats.repair.attempts, 1);
+  assert.equal(fitted.stats.repair.applied, false);
+  const difficult = wavyGrid(), difficultSource = generateCellLayout(difficult, generateSeeds(difficult, 250, .3, 1), { size: 250 });
+  const base = fitSharedPanels(difficultSource), bounded = fitSharedPanels(difficultSource, { thickness: 40, repairBudget: 1 });
+  assert.deepEqual(bounded.sharedVertices, base.sharedVertices);
+  assert.equal(bounded.stats.repair.applied, false);
+  assert.equal(bounded.stats.repair.attempts, 1);
+});
+
+function openCone(rotate = false) {
+  const vertices = [], triangles = [], sides = 24;
+  for (let level = 0; level <= 6; level++) for (let i = 0; i < sides; i++) {
+    const angle = i * 2 * Math.PI / sides, radius = 250 - level * 22;
+    const p = [radius * Math.cos(angle), radius * Math.sin(angle), level * 50];
+    vertices.push(rotate ? [p[0] * .8 + p[2] * .6, p[1], p[2] * .8 - p[0] * .6] : p);
+  }
+  for (let level = 0; level < 6; level++) for (let i = 0; i < sides; i++) {
+    const a = level * sides + i, b = level * sides + (i + 1) % sides;
+    const c = (level + 1) * sides + (i + 1) % sides, d = (level + 1) * sides + i;
+    triangles.push([a, b, c], [a, c, d]);
+  }
+  return { vertices, triangles };
+}
+
+for (const rotated of [false, true]) test(`planar open rims constrain fitted and thick geometry${rotated ? ' after rotation' : ''}`, () => {
+  const model = openCone(rotated), source = generateCellLayout(model, generateSeeds(model, 100, .3, 7), { size: 100 });
+  const before = JSON.stringify(source), fitted = fitSharedPanels(source, { iterations: 700, thickness: 20 });
+  const solids = buildPanelSolids(fitted.cells, { thickness: 20, radius: 2 });
+  const normal = rotated ? [.6, 0, .8] : [0, 0, 1], height = p => p.reduce((sum, value, i) => sum + value * normal[i], 0);
+  assert.equal(fitted.stats.planarBoundaryCount, 2);
+  assert.ok(fitted.stats.maxBoundaryDisplacement <= fitted.stats.boundaryDisplacementLimit + 1e-5);
+  assert.ok(fitted.stats.maxPlanarityError < 1e-6);
+  assert.ok(solids.filter(panel => panel.valid).length >= solids.length * .8);
+  for (const panel of fitted.cells) for (const point of panel.flatPositions) assert.ok(height(point) >= -1e-5 && height(point) <= 300 + 1e-5);
+  for (const panel of solids.filter(panel => panel.valid)) {
+    for (const point of panel.positions) assert.ok(height(point) >= -1e-5 && height(point) <= 300 + 1e-5);
+    assert.ok(panel.maxJointMismatch < 1e-7);
+  }
+  for (const panel of fitted.cells) panel.flatPositions.forEach((point, i) => {
+    const rim = panel.boundaryPlanes[i];
+    if (rim) assert.ok(Math.abs(point.reduce((sum, x, k) => sum + x * rim.normal[k], 0) - rim.d) < 1e-7);
+  });
+  checkShared(fitted);
+  assert.equal(JSON.stringify(source), before);
+});
+
+test('a flat plate boundary remains free to extrude to full thickness', () => {
+  const model = grid(4), source = generateCells(model, [{ id: 0, position: [100, 100, 0] }]);
+  const fitted = fitSharedPanels(source, { thickness: 40 });
+  assert.equal(fitted.stats.planarBoundaryCount, 0);
+  assert.ok(fitted.cells.every(cell => cell.boundaryPlanes.every(plane => plane === null)));
+  const [solid] = buildPanelSolids(fitted.cells, { thickness: 40, radius: 0 });
+  assert.equal(solid.valid, true, solid.issues.join('; '));
+  assert.equal(Math.min(...solid.positions.map(point => point[2])), -20);
+  assert.equal(Math.max(...solid.positions.map(point => point[2])), 20);
+});
+
+
+test('source vertices inside a cell prevent a false support-halfspace assumption', () => {
+  const model = openCone();
+  // The two boundary loops remain at z=0 and z=300, while a source vertex
+  // strictly inside the lower rim crosses its plane.
+  model.vertices[3 * 24 + 4][2] = -10;
+  const source = generateCellLayout(model, generateSeeds(model, 100, .3, 7), { size: 100 });
+  const fitted = fitSharedPanels(source, { iterations: 0 });
+  const bottom = fitted.cells.flatMap(cell => cell.boundaryPlanes).find(plane => plane && Math.abs(plane.d) < 1e-5);
+  assert.ok(bottom, 'the actual boundary still defines a planar opening');
+  assert.equal(bottom.support, 0, 'interior source triangles can legitimately occupy both sides');
+  assert.ok(fitted.cells.every(cell => cell.supportPlanes.every(plane => Math.abs(plane.d) > 1e-5)));
+});
+
+test('near-rim interior junctions stay above the source support plane or remain explicitly unresolved', () => {
+  const model = openCone();
+  for (let i = 24; i < 48; i++) model.vertices[i][2] = 3;
+  const source = generateCellLayout(model, generateSeeds(model, 100, .3, 7), { size: 100 });
+  const cold = fitSharedPanels(source, { iterations: 700, thickness: 20, repairBudget: 0 });
+  assert.ok(cold.stats.unstableVertexCount > 0, 'the fixture must include unresolved plane intersections');
+  const coldStock = buildPanelSolids(cold.cells, { thickness: 20, radius: 2 });
+  const fitted = fitSharedPanels(source, { iterations: 700, thickness: 20 });
+  let nearRimInterior = 0;
+  for (const panel of fitted.cells) panel.positions.forEach((sourcePoint, i) => {
+    const point = panel.flatPositions[i];
+    if (sourcePoint[2] > 0 && sourcePoint[2] < 10 && !panel.boundaryPlanes[i]) {
+      nearRimInterior++;
+      assert.ok(point[2] >= -1e-5, 'pinning only true boundary vertices must not leave an interior spike below the opening');
+    }
+    if (point[2] < -1e-5 || point[2] > 300 + 1e-5) {
+      assert.equal(panel.valid, false);
+      assert.ok(panel.issues.some(issue => /past a planar source opening/.test(issue)));
+    }
+  });
+  assert.ok(nearRimInterior > 0);
+  const solids = buildPanelSolids(fitted.cells, { thickness: 20, radius: 2 });
+  assert.ok(solids.filter(panel => !panel.valid).length < coldStock.filter(panel => !panel.valid).length, 'unstable junctions must not prevent all bounded stock repair');
+  assert.ok(coldStock.filter(panel => panel.valid).every(panel => solids.find(item => item.id === panel.id).valid), 'repair preserves every formerly valid stock panel');
+  assert.ok(fitted.stats.repair.applied);
+  assert.ok(fitted.stats.repair.maxVertexMove <= fitted.stats.repair.maxVertexMoveLimit);
+  assert.ok(fitted.cells.filter(panel => panel.valid).every(panel => panel.maxPlanarityError < 1e-6));
+  for (const panel of solids.filter(panel => panel.valid)) for (const point of panel.positions) assert.ok(point[2] >= -1e-5 && point[2] <= 300 + 1e-5);
 });

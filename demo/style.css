@@ -263,7 +263,7 @@ input[type="range"]::-moz-range-thumb { width: 7px; height: 11px; border: 1px so
 .mesh-drop span { font-size: 12px; color: #65788a; }
 .app-footer { height: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 9px; border-top: 1px solid #aeb7c0; background: #e8eaed; color: #607180; font-size: 10px; }
 .app-footer > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.app-footer > span:last-child { flex-shrink: 0; color: #788592; font-size: 9px; }
+.app-footer > span:last-child { flex-shrink: 0; color: #4f6171; font-size: 10px; white-space: nowrap; }
 
 @media (min-width: 1700px) { .workbench { grid-template-columns: 268px minmax(0, 1fr); } .left-dock { grid-template-rows: minmax(0, 1fr) 300px; } }
 @media (max-width: 1100px) { .workbench { grid-template-columns: 244px minmax(0, 1fr); } .header-context { display: none; } .active-tool-name { width: 105px; } .selection-context { font-size: 10px; } }
@@ -310,7 +310,7 @@ input[type="range"]::-moz-range-thumb { width: 7px; height: 11px; border: 1px so
   .browser-view { min-height: 28px; }
   .example-picker { margin-top: 5px; }
   .example-picker-controls select, .example-picker-controls .button { min-height: 30px; }
-  .app-footer > span:last-child { display: none; }
+  .app-footer { gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 

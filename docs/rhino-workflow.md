@@ -47,6 +47,11 @@ panel mesh and closed nominal outline curves. The mesh preserves the geometry
 of the selected settings: carved when carving is enabled, uncarved when it is
 disabled, with the calculated thickness, mitres, and rounding.
 
+The app checks the file's actual archive header before downloading, and filenames
+end in `-rhino6.3dm`. If an older exporter returns another version, the download
+is stopped with a message. The published footer identifies the build by its UTC
+date and time; save your study before reopening or refreshing an older page.
+
 | Layer | Contents |
 | --- | --- |
 | Assembly | One instance of each panel in its assembled position |

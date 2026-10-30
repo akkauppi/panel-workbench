@@ -86,11 +86,20 @@ registerHooks({
 });
 
 const validationReplies = [], heldValidationReplies = [], heldFitReplies = [], rhinoExports = [];
-let holdNextValidationReply = false, holdNextFitReply = false, alterNextFitReply = null;
+let holdNextValidationReply = false, holdNextFitReply = false, alterNextFitReply = null, returnNextRhino7Header = false;
 globalThis.Worker = class {
   constructor(path) {
     const owner = this;
     this.context = { postMessage(data) {
+      if (data.bytes && returnNextRhino7Header) {
+        // One stale worker response, without changing the current native writer
+        // or later exports. Only the 32-byte archive header is replaced.
+        returnNextRhino7Header = false;
+        data = structuredClone(data);
+        const header = new TextDecoder('ascii').decode(data.bytes.subarray(0, 32));
+        assert.match(header, /^3D Geometry File Format\s+60$/);
+        data.bytes.set(new TextEncoder().encode(`${header.slice(0, -2)}70`), 0);
+      }
       if (data.result && alterNextFitReply) {
         data = structuredClone(data);
         const alter = alterNextFitReply; alterNextFitReply = null;
@@ -494,6 +503,21 @@ function clickSeed(id, options) {
 function key(key, { shiftKey = false } = {}) {
   document.dispatchEvent(new window.KeyboardEvent('keydown', { key, ctrlKey: true, shiftKey, bubbles: true, cancelable: true }));
 }
+function escape() {
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+}
+function assertNeutralTools(label) {
+  assert.equal(state.selected, null, `${label}: clears the selected panel`);
+  assert.deepEqual(state.selectedIds, [], `${label}: clears multi-selection`);
+  assert.equal(state.selectedCorner, null, `${label}: clears the selected corner`);
+  for (const [id, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect']]) {
+    assert.equal(state[field], false, `${label}: resets ${field}`);
+    assert.equal($(id).getAttribute('aria-pressed'), 'false', `${label}: ${id} reflects its inactive mode`);
+  }
+  assert.equal(window.cellStudy.controls.enabled, true, `${label}: restores camera controls`);
+  assert.equal($('viewport').style.cursor, 'default', `${label}: restores the cursor`);
+  assert.equal(canvas.hasPointerCapture(1), false, `${label}: releases pointer capture`);
+}
 function surfaceShape(cell) {
   return structuredClone({ positions: cell.positions, triangles: cell.triangles, loops: cell.loops, area: cell.area });
 }
@@ -629,7 +653,7 @@ close(state.result.surfaceCells.reduce((sum, cell) => sum + cell.area, 0), 3200 
 assert.equal($('cell-weight').disabled, true, 'merged cell influence is unavailable');
 const visibleSeedIds = [];
 globalThis.__uiRenderers[0].scene.traverse(object => { if (object.userData.seedId !== undefined) visibleSeedIds.push(object.userData.seedId); });
-assert.ok(!visibleSeedIds.includes(10) && !visibleSeedIds.includes(20), 'merged members have no draggable centre handles');
+assert.ok(visibleSeedIds.includes(mergedId) && !visibleSeedIds.includes(20), 'a merged cell has one authored centre handle, without its retired member handles');
 const firstMerge = currentDesign();
 console.log('PASS real multi-selection, disconnected rejection, true merge coverage and member editing controls');
 
@@ -747,6 +771,7 @@ const preservedDocument = () => structuredClone({ design: currentDesign(), model
   rawModel: state.rawModel, name: state.name, cells: state.cells, result: state.result,
   history: state.history, future: state.future, selected: state.selected, selectedIds: state.selectedIds,
   selectedCorner: state.selectedCorner, revision: state.revision, solved: state.solved });
+const withoutSelection = saved => ({ ...saved, selected: null, selectedIds: [], selectedCorner: null });
 const beforeRejectedImport = preservedDocument();
 const disconnectedStudy = { ...stripStudy, name: 'invalid-disconnected-merge', mergeGroups: [{ id: 10, members: [10, 30] }] };
 const disconnectedText = JSON.stringify(disconnectedStudy);
@@ -907,7 +932,7 @@ close(state.result.surfaceCells.reduce((sum, cell) => sum + cell.area, 0), 1200 
 const movedCorner = findCurrentCorner(interiorCorner);
 assert.ok(movedCorner, 'accepted edit retains the corner identity');
 movedCorner.position.forEach((value, axis) => close(value, cornerTarget[axis], 'accepted source corner target', 1e-3));
-assert.equal($('edit-toggle').disabled, true, 'corner edits prevent seed moves');
+assert.equal($('edit-toggle').disabled, false, 'centre movement remains available after corner edits');
 clickSeed(0);
 assert.equal($('cell-weight').disabled, true, 'corner edits prevent cell reweighting');
 const oneCornerDesign = currentDesign(), oneCornerSurface = cornerSourceSnapshot();
@@ -955,6 +980,7 @@ assert.equal(window.cellStudy.controls.enabled,false,'a fitting result does not 
 assert.deepEqual(sketchObjects(),previewDuringFit,'a fitting result does not destroy preview objects or the grabbed handle');
 document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
 assert.equal(sketchObjects().length,0,'Escape clears preview geometry');
+assertNeutralTools('Escape during a corner sketch');
 assert.deepEqual(currentDesign(),sourceTwo,'Escape retains the last accepted arrangement');
 assert.equal($('export-dxf').disabled,false,'completed current fitting restores valid export');
 assert.notEqual($('stock-check').textContent,'Updating…','cancelling a gesture refreshes the completed fit diagnostics');
@@ -963,6 +989,7 @@ assert.deepEqual(currentDesign(),sourceOne);
 await edit(()=>key('z'),'undo first consecutive manual move');
 assert.deepEqual(currentDesign(),sequenceStart);
 console.log('PASS live shell sketch, consecutive edits during fitting, obsolete replies and in-gesture fitting completion');
+clickControl('corner-toggle');
 const altCorner=findCurrentCorner(interiorCorner),altNeighbour=state.result.corners.find(c=>c.boundary);
 const nearNeighbour=altNeighbour.position.map((x,k)=>x+(altCorner.position[k]-x)*.005),altScreen=projectWorld(nearNeighbour);
 const altTo=beginCornerDrag(altCorner,nearNeighbour);
@@ -970,6 +997,7 @@ assert.match($('corner-status').textContent,/Join corners/,'the proximity target
 pointer(canvas,'pointermove',altScreen.x,altScreen.y,{altKey:true});
 assert.doesNotMatch($('corner-status').textContent,/Join corners/,'Alt keeps a near-junction target free of proximity snapping');
 document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+assertNeutralTools('Escape during an Alt corner gesture');
 assert.deepEqual(currentDesign(),sequenceStart,'cancelled Alt gesture leaves the accepted layout unchanged');
 
 
@@ -981,33 +1009,38 @@ assert.equal($('edit-toggle').disabled, false);
 await edit(() => key('z', { shiftKey: true }), 'redo corner drag');
 assert.deepEqual(currentDesign(), oneCornerDesign);
 assert.deepEqual(cornerSourceSnapshot(), oneCornerSurface);
+clickControl('corner-toggle');
 const cancelHistory = state.history.length;
 const cancelCorner = findCurrentCorner(interiorCorner);
 const cancelledTarget = cancelCorner.position.map((value, axis) => value + [18, -12, 0][axis]);
 const cancelledScreen = beginCornerDrag(cancelCorner, cancelledTarget);
 document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
 pointer(canvas, 'pointerup', cancelledScreen.x, cancelledScreen.y);
+assertNeutralTools('Escape followed by a late corner pointerup');
 await until(() => state.solved && !state.busy && !state.pending, 'cancel corner drag');
 assert.deepEqual(currentDesign(), oneCornerDesign);
 assert.deepEqual(cornerSourceSnapshot(), oneCornerSurface);
 assert.equal(state.history.length, cancelHistory, 'cancelled drag creates no history entry');
 assert.equal(window.cellStudy.controls.enabled, true);
 assert.match($('corner-status').textContent, /cancelled/i, 'corner inspector confirms drag cancellation');
+clickControl('corner-toggle');
 const pendingCancelScreen = beginCornerDrag(findCurrentCorner(interiorCorner), cancelledTarget);
 const beforePendingCancel = preservedDocument(), beforeCancelReplies = validationReplies.length;
 pointer(canvas, 'pointerup', pendingCancelScreen.x, pendingCancelScreen.y);
 assert.equal($('save-study').disabled, true, 'released corner is awaiting validation');
 assert.equal(validationReplies.length, beforeCancelReplies, 'validation has not replied before Escape');
 document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+assertNeutralTools('Escape during pending corner validation');
 await until(() => validationReplies.length > beforeCancelReplies, 'reply after cancelling pending corner validation');
 assert.equal(validationReplies.at(-1).error, undefined, 'the cancelled candidate was otherwise geometrically valid');
-assert.deepEqual(preservedDocument(), beforePendingCancel, 'late successful validation cannot commit a cancelled corner move');
+assert.deepEqual(preservedDocument(), withoutSelection(beforePendingCancel), 'late successful validation cannot commit a cancelled corner move or restore its selection');
 assert.equal(state.history.length, cancelHistory);
 assert.equal($('save-study').disabled, false);
 assert.equal($('export-obj').disabled, false);
 assert.match($('corner-status').textContent, /cancelled/i, 'late validation cannot leave a stale checking message');
 console.log('PASS corner undo/redo and drag/pending Escape cancellation preserve accepted geometry');
 
+clickControl('corner-toggle');
 const boundaryCorner = state.result.corners.find(corner => corner.boundary
   && ((corner.position[1] < 1e-6 || corner.position[1] > 1200 - 1e-6) && corner.position[0] > 80 && corner.position[0] < 1120));
 assert.ok(boundaryCorner, 'fixture needs a boundary endpoint away from outer corners');
@@ -1313,6 +1346,7 @@ for (const view of ['flat', 'solid']) {
   else {
     document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     pointer(canvas, 'pointerup', cancelTo.x, cancelTo.y);
+    assertNeutralTools('Escape from the solid corner view');
   }
   assert.deepEqual(currentDesign(), accepted);
   assert.deepEqual(cornerSourceSnapshot(), sourceAccepted);
@@ -1396,7 +1430,7 @@ assert.equal(state.layout.recipe.engine, 'structured-v1');
 assert.deepEqual(state.layout.recipe.pattern, state.pattern);
 assert.ok(state.cells.filter(cell => cell.neighbors.length === 6).length > 3, 'the planar lattice has multiple complete hexagonal interiors');
 assert.ok(state.result.stats.coverageError < 1e-8);
-assert.equal($('edit-toggle').disabled, true, 'structured cells are edited through graph corners rather than random centers');
+assert.equal($('edit-toggle').disabled, false, 'structured cells support graph centre movement');
 for (const cell of state.result.surfaceCells) for (const triangle of cell.triangles) {
   const center = [0, 2].map(axis => triangle.reduce((sum, id) => sum + cell.positions[id][axis], 0) / 3);
   assert.ok(!(center[0] > -400 && center[0] < 400 && center[1] > -300 && center[1] < 300), 'hexagonal clipping must retain the source opening');
@@ -1589,9 +1623,10 @@ const beforeEscapeGeneration = preservedDocument();
 const escapeReply = await holdArrangement('hold generation before Escape cancellation');
 document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
 assert.equal(state.generating, false);
+assertNeutralTools('Escape during arrangement generation');
 assert.match($('status').textContent, /arrangement cancelled/i);
 const escapeStatus = $('status').textContent;
-await deliverCancelledArrangement(escapeReply, beforeEscapeGeneration, 'ignore generation cancelled with Escape');
+await deliverCancelledArrangement(escapeReply, withoutSelection(beforeEscapeGeneration), 'ignore generation cancelled with Escape');
 assert.equal($('status').textContent, escapeStatus);
 console.log('PASS spacing presets and Escape cancel generation without losing accepted geometry or later drafts');
 
@@ -1624,7 +1659,7 @@ assert.deepEqual(state.layout.recipe.pattern, state.pattern);
 assert.equal(state.cells.length, organicVesselDesign.layout.cells.length, 'relaxation preserves the intended cell count');
 assert.ok(state.result.stats.coverageError < 1e-8);
 assert.notDeepEqual(cornerSourceSnapshot(), organicVesselSource, 'relaxation authors an actual source layout');
-assert.equal($('edit-toggle').disabled, true, 'regularized layouts use direct graph editing');
+assert.equal($('edit-toggle').disabled, false, 'regularized layouts support graph centre movement');
 assertQualityUI('regularized vessel');
 await edit(() => clickControl('undo-move'), 'undo organic-to-regularized generation');
 assert.deepEqual(currentDesign(), organicVesselDesign);
@@ -1753,6 +1788,21 @@ console.log('PASS convexity labels match geometry and valid concave panels still
 await openStudy(cornerStudy, 'Rhino production fixture');
 const {loadRhino}=await import(new URL('rhino-runtime.js',demo).href),rhino=await loadRhino();
 assert.equal($('export-rhino').disabled,false);
+async function expectStaleRhinoExportBlocked(id) {
+  const controls = ['export-rhino', 'export-rhino-repair', 'export-repair-shortcut'];
+  const previousDisabled = controls.map(control => $(control).disabled);
+  const downloadCount = downloads.length, exportCount = rhinoExports.length;
+  assert.equal($(id).disabled, false);
+  returnNextRhino7Header = true;
+  clickControl(id);
+  for (const control of controls) assert.equal($(control).disabled, true, `${control} waits for the delivered archive`);
+  await until(() => !returnNextRhino7Header && !$(id).disabled, `reject stale Rhino 7 response from ${id}`);
+  assert.equal(rhinoExports.length, exportCount + 1, 'the stale response came from one actual native export request');
+  assert.equal(downloads.length, downloadCount, 'a Rhino 7 header cannot reach the browser download');
+  assert.match($('status').textContent, /Rhino 7 format instead of Rhino 6\. Download stopped\./);
+  assert.match($('status').textContent, /Save your study, reopen the updated site, and export again/);
+  assert.deepEqual(controls.map(control => $(control).disabled), previousDisabled, 'export controls recover after a rejected archive');
+}
 for (const setting of ['carving', 'thickness']) {
   const revision = state.revision, exportCount = rhinoExports.length, downloadCount = downloads.length, fitReplyCount = heldFitReplies.length;
   holdNextFitReply = true;
@@ -1774,9 +1824,11 @@ for (const setting of ['carving', 'thickness']) {
   await until(() => state.revision > revision && state.solved, `resolve ${setting} for Rhino export`);
   assert.equal($('export-rhino').disabled, false, `${setting} enables export of the newly resolved solids`);
 }
+await expectStaleRhinoExportBlocked('export-rhino');
 const cadCount=downloads.length;
 clickControl('export-rhino');
 await until(()=>downloads.length>cadCount,'native 3DM production download');
+assert.equal(downloads.at(-1).name, `${state.name}-production-rhino6.3dm`);
 assert.equal(rhinoExports.at(-1).options.carved, true);
 assert.deepEqual(rhinoExports.at(-1).solids, state.result.solids, 'native export receives the newly selected carved geometry');
 const production=rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
@@ -1832,10 +1884,11 @@ assert.equal(state.selected, solidOnlyId); assert.equal(state.view, 'solid');
 assert.equal(problemButton(solidOnlyId).getAttribute('aria-pressed'), 'true');
 assert.ok($('selected-note').textContent.includes(solidFailure), 'solid selection explains its separate thickness failure');
 
+await expectStaleRhinoExportBlocked('export-rhino-repair');
 const repairDownloadCount = downloads.length;
 clickControl('export-rhino-repair');
 await until(() => downloads.length > repairDownloadCount, 'explicit native repair download');
-assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair.3dm');
+assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair-rhino6.3dm');
 assert.equal(rhinoExports.at(-1).operation, 'repair-export');
 assert.deepEqual(rhinoExports.at(-1).sourceCells, state.result.surfaceCells, 'repair receives original source patches for missing solids');
 const repairFile = rhino.File3dm.fromByteArray(new Uint8Array(await downloads.at(-1).blob.arrayBuffer()));
@@ -1869,7 +1922,7 @@ try {
 const shortcutDownloadCount = downloads.length;
 clickControl('export-repair-shortcut');
 await until(() => downloads.length > shortcutDownloadCount, 'diagnostic panel repair shortcut');
-assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair.3dm');
+assert.equal(downloads.at(-1).name, 'repair-diagnostic-fixture-repair-rhino6.3dm');
 
 const repairRevision = state.revision, repairExportCount = rhinoExports.length, pendingDownloads = downloads.length, repairFitCount = heldFitReplies.length;
 holdNextFitReply = true;
@@ -1890,7 +1943,7 @@ assert.equal($('panel-problem-list').children.length, 0);
 assert.match($('export-availability').textContent, /All panels resolved/);
 assert.equal($('export-rhino').disabled, false);
 assert.equal($('export-rhino-repair').disabled, false);
-console.log('PASS unresolved panel reasons, inspection selection, native repair blocks, and pending-solve export guards');
+console.log('PASS unresolved panel reasons, native repair blocks, stale Rhino version rejection and recovery, and pending-solve export guards');
 
 const incoming=new rhino.File3dm();incoming.settings().modelUnitSystem=rhino.UnitSystem.Centimeters;
 const curve=new rhino.PolylineCurve([[0,0,0],[120,0,0],[120,120,0],[0,120,0],[0,0,0]]),cadAttrs=new rhino.ObjectAttributes();
@@ -1903,6 +1956,166 @@ assert.equal($('model-units').value,'mm');assert.equal($('model-up').value,'z');
 close(Math.max(...state.rawModel.vertices.map(p=>p[0])),1200,'Rhino centimetres normalize to mm');
 assert.match($('import-note').textContent,/planar surface/);
 console.log('PASS native Rhino production download, 3DM planar source import, units and format help');
+
+// Escape is also a neutral-state command outside a drag. No design or history
+// change should be needed simply to leave a selected editing tool.
+await openStudy(cornerStudy, 'Escape tool reset fixture');
+escape(); assertNeutralTools('initial neutral Escape');
+for (const [tool, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect']]) {
+  const before = currentDesign(), history = structuredClone(state.history), future = structuredClone(state.future);
+  clickControl(tool); assert.equal(state[field], true);
+  if (field === 'cornerMode') {
+    const corner = state.result.corners.find(item => !item.boundary), point = window.cellStudy.projectCorner(corner.id);
+    pointer(canvas, 'pointerdown', point.x, point.y); pointer(canvas, 'pointerup', point.x, point.y);
+    assert.equal(state.selectedCorner, corner.id);
+  } else {
+    clickSeed(0);
+    if (field === 'multiSelect') { clickSeed(1); assert.equal(state.selectedIds.length, 2); }
+    assert.ok(state.selectedIds.length);
+  }
+  escape(); assertNeutralTools(`neutral Escape from ${field}`);
+  assert.deepEqual(currentDesign(), before, 'leaving a tool preserves the accepted arrangement');
+  assert.deepEqual(state.history, history); assert.deepEqual(state.future, future);
+}
+console.log('PASS Escape clears selection and all editing modes without changing the design or history');
+
+// Centre previews currently edit seed positions while a debounced fit may be
+// running. Cancellation must restore both the source intent and derived views.
+for (const phase of ['before debounce', 'in flight']) {
+  await openStudy(cornerStudy, `centre cancellation ${phase}`);
+  if (!state.edit) clickControl('edit-toggle');
+  flush();
+  const before = currentDesign(), beforeCells = structuredClone(state.cells), beforeResult = structuredClone(state.result);
+  const history = structuredClone(state.history), future = structuredClone(state.future);
+  const camera = window.cellStudy.camera.position.toArray(), target = window.cellStudy.controls.target.toArray();
+  const seed = state.seeds[0], screen = window.cellStudy.projectSeed(seed.id), heldCount = heldFitReplies.length;
+  if (phase === 'in flight') holdNextFitReply = true;
+  pointer(canvas, 'pointerdown', screen.x, screen.y);
+  assert.equal(window.cellStudy.controls.enabled, false); assert.equal(canvas.hasPointerCapture(1), true);
+  pointer(canvas, 'pointermove', screen.x + 12, screen.y + 6);
+  assert.notDeepEqual(currentDesign().seeds, before.seeds, 'the test must move a real centre before cancellation');
+  if (phase === 'in flight') await until(() => heldFitReplies.length > heldCount, 'hold centre-drag fitting result');
+  escape(); assertNeutralTools(`centre Escape ${phase}`);
+  assert.deepEqual(currentDesign(), before, 'Escape immediately restores the accepted centre arrangement');
+  const cancelledRequest = state.requested;
+  pointer(canvas, 'pointerup', screen.x + 12, screen.y + 6);
+  assertNeutralTools(`late centre pointerup ${phase}`);
+  if (phase === 'in flight') {
+    heldFitReplies[heldCount].deliver();
+    await Promise.resolve(); await Promise.resolve();
+    assert.deepEqual(currentDesign(), before, 'the obsolete fit cannot briefly replace the restored source');
+  }
+  await until(() => state.solved && !state.busy && !state.pending, `settle cancelled centre ${phase}`);
+  if (phase === 'before debounce') {
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(state.requested, cancelledRequest, 'the cancelled debounce cannot start another solve');
+  }
+  assert.deepEqual(currentDesign(), before);
+  assert.deepEqual(state.cells, beforeCells, 'cancelled centre restores the fitted panels');
+  assert.deepEqual(state.result, beforeResult, 'cancelled centre restores the complete solid/carving result');
+  assert.deepEqual(state.history, history, 'cancelled centre movement creates no undo entry');
+  assert.deepEqual(state.future, future, 'cancelled centre movement preserves redo history');
+  assert.deepEqual(window.cellStudy.camera.position.toArray(), camera);
+  assert.deepEqual(window.cellStudy.controls.target.toArray(), target);
+  assertNeutralTools(`settled centre cancellation ${phase}`);
+}
+console.log('PASS centre Escape rolls back previews, cancels debounce, rejects stale fitting, and ignores late pointerup');
+
+// A corner edit must not force the designer to discard authored seams before
+// moving a cell centre. Graph centre previews commit once, on release.
+await openStudy(cornerStudy, 'mixed corner and centre editing');
+if (!state.cornerMode) clickControl('corner-toggle');
+const mixedCorner = state.result.corners.find(corner => !corner.boundary);
+await edit(() => {
+  const to = beginCornerDrag(mixedCorner, mixedCorner.position.map((x, k) => x + [20, 10, 0][k]));
+  pointer(canvas, 'pointerup', to.x, to.y);
+}, 'author a corner before centre movement');
+const beforeGraphCentre = currentDesign(), graphCentreHistory = state.history.length;
+clickControl('edit-toggle'); flush();
+assert.equal(state.edit, true); assert.equal(state.cornerMode, false);
+const graphCentreId = state.layout.cells[0].id;
+function beginGraphCentreMove(dx = 8, dy = 4) {
+  flush();
+  const from = window.cellStudy.projectCellCentre(graphCentreId);
+  assert.ok(from, 'authored cells expose a centre handle');
+  pointer(canvas, 'pointerdown', from.x, from.y);
+  assert.equal(window.cellStudy.controls.enabled, false);
+  pointer(canvas, 'pointermove', from.x + dx, from.y + dy);
+  return { x: from.x + dx, y: from.y + dy };
+}
+await edit(() => {
+  const to = beginGraphCentreMove();
+  assert.deepEqual(currentDesign(), beforeGraphCentre, 'centre preview does not alter the accepted graph');
+  assert.equal($('save-study').disabled, true);
+  pointer(canvas, 'pointerup', to.x, to.y);
+}, 'centre movement after a corner edit');
+const afterGraphCentre = currentDesign();
+assert.notDeepEqual(afterGraphCentre.layout, beforeGraphCentre.layout);
+assert.deepEqual(afterGraphCentre.seeds, beforeGraphCentre.seeds, 'generated seeds remain provenance');
+assert.deepEqual(afterGraphCentre.layout.recipe, beforeGraphCentre.layout.recipe);
+assert.deepEqual(afterGraphCentre.directBase, beforeGraphCentre.directBase);
+assert.equal(afterGraphCentre.layout.cells.length, beforeGraphCentre.layout.cells.length);
+assert.equal(state.history.length, graphCentreHistory + 1);
+close(state.result.surfaceCells.reduce((sum, cell) => sum + cell.area, 0), 1200 * 1200, 'centre edit preserves source coverage');
+await edit(() => key('z'), 'undo graph centre movement');
+assert.deepEqual(currentDesign(), beforeGraphCentre);
+await edit(() => key('z', { shiftKey: true }), 'redo graph centre movement');
+assert.deepEqual(currentDesign(), afterGraphCentre);
+const mixedSaved = await saveStudy();
+await openStudy(mixedSaved, 'reopen mixed corner and centre edits');
+assert.deepEqual(currentDesign(), afterGraphCentre);
+if (!state.edit) clickControl('edit-toggle');
+let graphTo = beginGraphCentreMove();
+escape(); pointer(canvas, 'pointerup', graphTo.x, graphTo.y);
+assertNeutralTools('Escape from graph centre preview');
+assert.deepEqual(currentDesign(), afterGraphCentre);
+clickControl('edit-toggle');
+const heldGraphValidation = heldValidationReplies.length;
+holdNextValidationReply = true;
+graphTo = beginGraphCentreMove(); pointer(canvas, 'pointerup', graphTo.x, graphTo.y);
+await until(() => heldValidationReplies.length > heldGraphValidation, 'hold graph centre validation');
+escape(); heldValidationReplies[heldGraphValidation].deliver();
+await Promise.resolve(); await Promise.resolve();
+assertNeutralTools('Escape from pending graph centre move');
+assert.deepEqual(currentDesign(), afterGraphCentre, 'late validation cannot apply a cancelled graph move');
+console.log('PASS centre movement after corners preserves authored layout, undo/redo/save/reopen and Escape rollback');
+
+// An ordinary organic merge predates direct graph edits. It must expose one
+// movable merged centre before any corner has been edited.
+await openStudy(stripStudy, 'ordinary organic merge before centre movement');
+if (!state.edit) clickControl('edit-toggle');
+clickSeed(10); clickSeed(20, { shiftKey: true });
+await edit(() => clickControl('merge-cells'), 'ordinary organic merge for centre movement');
+assert.equal(state.directBase, null); assert.deepEqual(state.cornerEdits, []);
+assert.equal(state.mergeGroups.length, 1);
+const legacyMergedId = state.mergeGroups[0].id, beforeMergedCentre = currentDesign(), mergedCentreHistory = state.history.length;
+flush();
+const mergedCentreScreen = window.cellStudy.projectCellCentre(legacyMergedId);
+assert.ok(mergedCentreScreen, 'an ordinary merged cell exposes its authored centre');
+await edit(() => {
+  pointer(canvas, 'pointerdown', mergedCentreScreen.x, mergedCentreScreen.y);
+  assert.equal(window.cellStudy.controls.enabled, false, 'grab the merged handle rather than orbiting');
+  pointer(canvas, 'pointermove', mergedCentreScreen.x + 8, mergedCentreScreen.y + 4);
+  assert.deepEqual(currentDesign(), beforeMergedCentre, 'merged centre preview retains the accepted layout');
+  pointer(canvas, 'pointerup', mergedCentreScreen.x + 8, mergedCentreScreen.y + 4);
+}, 'move a merged cell centre without prior corner edits');
+const afterMergedCentre = currentDesign();
+assert.notDeepEqual(afterMergedCentre.layout, beforeMergedCentre.layout);
+assert.deepEqual(afterMergedCentre.directBase, beforeMergedCentre.layout);
+assert.deepEqual(afterMergedCentre.mergeGroups, beforeMergedCentre.mergeGroups);
+assert.deepEqual(afterMergedCentre.seeds, beforeMergedCentre.seeds);
+assert.deepEqual(afterMergedCentre.layout.recipe, beforeMergedCentre.layout.recipe);
+assert.deepEqual(state.layout.cells.find(cell => cell.id === legacyMergedId).memberSeedIds, [10, 20]);
+assert.equal(state.layout.cells.length, 3); assert.equal(state.history.length, mergedCentreHistory + 1);
+close(state.result.surfaceCells.reduce((sum, cell) => sum + cell.area, 0), 3200 * 800, 'merged centre move preserves source coverage');
+await edit(() => key('z'), 'undo merged centre movement');
+assert.deepEqual(currentDesign(), beforeMergedCentre);
+await edit(() => key('z', { shiftKey: true }), 'redo merged centre movement');
+assert.deepEqual(currentDesign(), afterMergedCentre);
+const mergedCentreSave = await saveStudy();
+await openStudy(mergedCentreSave, 'reopen merged centre movement');
+assert.deepEqual(currentDesign(), afterMergedCentre);
+console.log('PASS ordinary organic merge exposes an editable centre and preserves merged provenance, undo/redo and saved geometry');
 
 assert.equal(errors.length, 0, errors.map(error => error.message).join('\n'));
 console.log('Browserless integration PASSED. WebGL rendering and browser layout were not tested.');

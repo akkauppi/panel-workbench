@@ -26,10 +26,11 @@ export function createWorkerHandler(postMessage) {
       if (data.model) model = data.model;
       if (!model) throw new Error('Load a mesh first.');
       const { seeds, surface, layout } = resolveSourceLayout(model, data);
-      const result = fitSharedPanels(surface, { straightness: data.straightness ?? 0.7, iterations: 700 });
+      const analysis = analyzeModel(model);
+      const result = fitSharedPanels(surface, { straightness: data.straightness ?? 0.7, iterations: 700,
+        thickness: data.thickness ?? 40, outwardCenter: analysis.center, flipDirection: !!data.flipOutside });
       for (const cell of result.cells) cell.polygonQuality = inspectPolygon(cell.outline2d);
       result.quality = measureLayoutQuality(result.cells);
-      const analysis = analyzeModel(model);
       result.solids = buildPanelSolids(result.cells, { thickness: data.thickness ?? 40, radius: data.roundover ?? 2,
         roundoverSide: data.carve ? 'positive' : 'both', outwardCenter: analysis.center, flipDirection: !!data.flipOutside });
       if (data.carve) {

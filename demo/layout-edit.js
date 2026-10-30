@@ -1,4 +1,4 @@
-import { ShapeUtils, Vector2 } from './vendor/three.core.js';
+import { ShapeUtils, Triangle, Vector2, Vector3 } from './vendor/three.core.js';
 import { readLayout, restoreLayout, captureLayout } from './layout.js';
 import { rebuildSurfaceCells, mergeSurfaceCells } from './geometry.js';
 
@@ -15,6 +15,7 @@ const side = (a, b, c) => (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
 const area = ring => ring.reduce((s,p,i) => {const q=ring[(i+1)%ring.length];return s+p[0]*q[1]-p[1]*q[0];},0)/2;
 const fail = message => { throw new Error(message); };
 const previewCache = new WeakMap();
+const cellHandleCache = new WeakMap();
 
 function network(layout) {
   const points = new Map(layout.vertices.map(v => [v.id,v.position])), nodes = new Map(), directed = new Map();
@@ -50,6 +51,30 @@ function cornerVertex(layout, cornerId) {
   const vertex=corner.vertexId || layout.vertices.find(v=>key(v.position)===key(corner.position))?.id;
   if(!vertex)fail('This corner has no source graph vertex.');
   return {corner,vertex};
+}
+
+/** A cell handle belongs to its current authored patch, not its old seed field. */
+export function layoutCellHandle(layout, cellId) {
+  let cached=cellHandleCache.get(layout);
+  if(!cached){cached={handles:new Map()};cellHandleCache.set(layout,cached);}
+  if(cached.handles.has(cellId)){const handle=cached.handles.get(cellId);return {...handle,position:[...handle.position],cornerIds:[...handle.cornerIds]};}
+  const cell=layout.cells.find(item=>item.id===cellId);
+  if(!cell)fail('This cell is no longer present in the authored layout.');
+  const center=new Vector3(),triangles=[];let total=0;
+  for(const face of cell.triangles){
+    const triangle=new Triangle(...face.vertices.map(index=>new Vector3(...cell.positions[index]))),area=triangle.getArea();
+    if(area<=1e-9)continue;
+    center.addScaledVector(triangle.getMidpoint(new Vector3()),area);total+=area;triangles.push(triangle);
+  }
+  if(!total)fail('This cell has no usable source patch for a movement handle.');
+  center.multiplyScalar(1/total);
+  const nearest=new Vector3();let point=null,best=Infinity;
+  for(const triangle of triangles){triangle.closestPointToPoint(center,nearest);const d=nearest.distanceToSquared(center);if(d<best){best=d;point=nearest.clone();}}
+  const corners=layout.corners.filter(corner=>corner.cells.includes(cellId));
+  const position=point.toArray(),handle={cellId,position,cornerIds:corners.map(corner=>corner.id),
+    radius:Math.max(EPS,...cell.positions.map(point=>distance(point,position)))*1.1};
+  cached.handles.set(cellId,handle);
+  return {...handle,position:[...handle.position],cornerIds:[...handle.cornerIds]};
 }
 
 /** Candidates follow complete logical seams, never proximity across sheets. */
@@ -120,6 +145,20 @@ function chart(model, layout, affected, origin, checkOverlap = true) {
 
 function pathLength(path) {let result=0;for(let i=1;i<path.length;i++)result+=distance(path[i-1],path[i]);return result;}
 function oriented(arc, start) {return arc.a===start?arc.points:arc.points.slice().reverse();}
+
+function removeNumericalBends(points) {
+  const keep=new Set([0,points.length-1]),pending=[[0,points.length-1]];
+  while(pending.length){
+    const [first,last]=pending.pop(),a=points[first],d=sub(points[last],a);let farthest=-1,error=1e-4;
+    for(let i=first+1;i<last;i++){
+      const t=Math.max(0,Math.min(1,dot(sub(points[i],a),d)/(dot(d,d)||1)));
+      const gap=distance(points[i],a.map((x,k)=>x+t*d[k]));
+      if(gap>error){error=gap;farthest=i;}
+    }
+    if(farthest>=0){keep.add(farthest);pending.push([first,farthest],[farthest,last]);}
+  }
+  return points.filter((_,i)=>keep.has(i));
+}
 
 function slideBoundary(arcs, vertex, target, targetId) {
   const boundary=arcs.filter(arc=>arc.boundary&&(arc.a===vertex||arc.b===vertex));
@@ -332,11 +371,14 @@ function graphCorners(layout,model) {
   });
 }
 
-function finish(model, previous, builders, change, target=null, survivor=null, retiredVertex=null, expectedJunction=null) {
+function finish(model, previous, builders, change, target=null, survivor=null, retiredVertex=null, expectedJunction=null, movedVertices=[]) {
   const generation={requestedCellCount:builders.reduce((sum,cell)=>sum+cell.memberSeedIds.length,0),emptyCellCount:0,mergedCellCount:builders.reduce((sum,cell)=>sum+cell.memberSeedIds.length-1,0)};
   const source=rebuildSurfaceCells(model,builders,generation);source.corners=[];
   const layout=captureLayout(model,source,{previous,recipe:previous.recipe,authority:'graph'});
-  if(target&&survivor) {
+  const restorations=[...movedVertices];
+  if(target&&survivor)restorations.push({target,survivor,expectedJunction});
+  for(const move of restorations) {
+    const {target,survivor,expectedJunction}=move;
     const incident=new Map();
     for(const edge of layout.edges)for(const vertex of edge.vertices) {
       if(!incident.has(vertex))incident.set(vertex,{cells:new Set(),boundary:false});
@@ -361,9 +403,74 @@ function finish(model, previous, builders, change, target=null, survivor=null, r
   return {layout,surface,change:{...change,survivingCornerId:corner?.id??null,movedVertexId:survivor}};
 }
 
+function moveCell(model, input, layout, source, operation) {
+  if(!Array.isArray(operation.target)||operation.target.length!==3||operation.target.some(x=>!Number.isFinite(x)))fail('The cell target must be a finite source-surface point.');
+  const handle=layoutCellHandle(layout,operation.cellId),target=[...operation.target];
+  if(distance(handle.position,target)<EPS)return {layout:input,surface:source,change:{removedCellIds:[],collapsedEdgeIds:[],affectedCellIds:[],movedCellId:operation.cellId,movedVertexIds:[],handlePosition:handle.position}};
+  const corners=layout.corners.filter(corner=>handle.cornerIds.includes(corner.id));
+  if(!corners.length)fail('This cell has no shared corners to move. Its source perimeter stays fixed.');
+  const graph=network(layout),vertices=new Map(corners.map(corner=>[cornerVertex(layout,corner.id).vertex,corner]));
+  const affected=new Set(graph.arcs.filter(arc=>vertices.has(arc.a)||vertices.has(arc.b)).flatMap(arc=>[...arc.owners.keys()]));
+  const local=chart(model,layout,affected,handle.position),delta=sub(local.address(target),local.project(handle.position)),moves=[];
+  function onSource(xy) {
+    const face=local.faces.find(face=>face.xy.every((a,i)=>side(a,face.xy[(i+1)%3],xy)>=-1e-6));
+    if(!face)fail('The cell move would leave the connected source patch. Move it a shorter distance.');
+    return local.lift(xy,face);
+  }
+  for(const [vertex,corner] of vertices){
+    const wanted=local.project(corner.position).map((value,axis)=>value+delta[axis]);let moved;
+    if(corner.boundary){
+      let best=Infinity;
+      for(const arc of graph.arcs.filter(arc=>arc.boundary&&(arc.a===vertex||arc.b===vertex)))for(let i=1;i<arc.points.length;i++){
+        const a=local.project(arc.points[i-1]),b=local.project(arc.points[i]),d=sub(b,a),t=Math.max(0,Math.min(1,dot(sub(wanted,a),d)/(dot(d,d)||1)));
+        const projected=a.map((value,axis)=>value+t*d[axis]),error=distance(projected,wanted);
+        if(error<best){best=error;moved=arc.points[i-1].map((value,axis)=>value+t*(arc.points[i][axis]-value));}
+      }
+      if(!moved)fail('A boundary cell corner has no connected source perimeter.');
+      for(const arc of graph.arcs.filter(arc=>arc.boundary&&(arc.a===vertex||arc.b===vertex))){
+        const other=arc.a===vertex?arc.b:arc.a;
+        if(distance(moved,graph.points.get(other))<EPS)fail('The cell move would collapse a boundary seam. Move it a shorter distance or edit the corner explicitly.');
+      }
+    }else moved=onSource(wanted);
+    if(distance(moved,corner.position)>EPS)moves.push({target:moved,survivor:vertex,expectedJunction:{cells:[...corner.cells],boundary:corner.boundary}});
+  }
+  if(!moves.length)fail('The source perimeter prevents this cell movement. Move along the boundary or edit its corners.');
+  const targets=new Map(moves.map(move=>[move.survivor,move.target]));
+  // Update shared boundary arcs in the temporary graph. The original perimeter
+  // samples, including sharp outer corners and openings, remain on their path.
+  for(const move of moves)if(move.expectedJunction.boundary)slideBoundary(graph.arcs,move.survivor,move.target,move.survivor);
+  for(const arc of graph.arcs)if(!arc.boundary&&(targets.has(arc.a)||targets.has(arc.b))){
+    // Transport the authored seam, including its bends. Moving a centre must
+    // not silently replace an irregular arrangement with straight edges.
+    const before=arc.points.map(local.project),total=pathLength(before),a=targets.get(arc.a)||graph.points.get(arc.a),b=targets.get(arc.b)||graph.points.get(arc.b);
+    const da=sub(local.project(a),before[0]),db=sub(local.project(b),before.at(-1));let travelled=0;
+    arc.points=before.map((point,i)=>{
+      if(i===0)return a;
+      if(i===before.length-1)return b;
+      travelled+=distance(before[i-1],point);const t=travelled/(total||1);
+      return onSource(point.map((value,axis)=>value+da[axis]*(1-t)+db[axis]*t));
+    });arc.changed=true;
+    if(pathLength(arc.points)<EPS)fail('The cell move would collapse a shared seam. Move it a shorter distance or merge explicitly.');
+  }
+  for(const arc of graph.arcs){
+    arc.xy=arc.points.map(local.project);
+    // Transported source-edge subdivisions can contain numerical kinks that
+    // create nearly zero-width clipping fans. Preserve junctions and true
+    // bends; every discarded sample stays within 0.0001 mm in this chart.
+    if(arc.changed&&!arc.boundary)arc.xy=removeNumericalBends(arc.xy);
+  }
+  intersections(graph.arcs,affected);
+  const builders=retessellate(layout,affected,[],graph.arcs,local);
+  const result=finish(model,layout,builders,{removedCellIds:[],collapsedEdgeIds:[],affectedCellIds:[...affected].sort((a,b)=>a-b),
+    movedCellId:operation.cellId,movedVertexIds:moves.map(move=>move.survivor),requestedTarget:target},null,null,null,null,moves);
+  result.change.handlePosition=layoutCellHandle(result.layout,operation.cellId).position;
+  return result;
+}
+
 /** Atomic direct graph transaction: no seed-field regeneration or hidden radius. */
 export function transactLayout(model, input, operation) {
   const layout=readLayout(input),source=restoreLayout(model,layout);
+  if(operation?.type==='move-cell')return moveCell(model,input,layout,source,operation);
   if(operation?.type==='merge-cells') {
     const selected=operation.cellIds;
     if(!Array.isArray(selected)||selected.length<2||new Set(selected).size!==selected.length)fail('Select at least two different adjacent cells to merge.');

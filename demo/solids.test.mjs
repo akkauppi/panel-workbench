@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPanelSolids, exportSolidsOBJ, exportSolidsSTL, attachSolidCornerPositions } from './solids.js';
+import { inspectStockEnvelopes, buildPanelSolids, exportSolidsOBJ, exportSolidsSTL, attachSolidCornerPositions } from './solids.js';
 import { buildCarvedPanels } from './carving.js';
 
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -241,4 +241,36 @@ test('carved corner handles use the fixed outside stock face and omit the deform
   assert.deepEqual(corner.solidPositions.map(entry => entry.side), ['positive']);
   assert.deepEqual(corner.solidPosition, solids[0].cornerAnchors.find(anchor => anchor.sharedVertexId === 10).positive);
   assert.equal(corner.solidPosition[2], 10);
+});
+
+
+test('fast stock envelopes detect a thickness-only crossing of a source support plane', () => {
+  const c = .5, s = Math.sqrt(3) / 2;
+  const panel = cell(0, [[0, 0, 2], [100, 0, 2], [100, 100 * c, 2 + 100 * s], [0, 100 * c, 2 + 100 * s]], undefined,
+    { origin: [0, 0, 2], u: [1, 0, 0], v: [0, c, s], normal: [0, -s, c] });
+  panel.supportPlanes = [{ normal: [0, 0, 1], d: 0, support: 1 }];
+  const [envelope] = inspectStockEnvelopes([panel], { thickness: 40 });
+  const [solid] = buildPanelSolids([panel], { thickness: 40, radius: 2 });
+  assert.equal(envelope.valid, false);
+  assert.ok(envelope.boundaryViolation > 7.9);
+  assert.equal(solid.valid, false);
+  assert.match(solid.issues.join(' '), /past a planar source opening/);
+  assert.ok(panel.flatPositions.every(point => point[2] > 0), 'the midsurface is inside; the thick cap is the failure');
+  assert.equal(inspectStockEnvelopes([panel], { thickness: 2 })[0].valid, true);
+  assert.equal(buildPanelSolids([panel], { thickness: 2, radius: 0 })[0].valid, true);
+});
+
+test('a source rim trims thick stock even when an adjacent panel is invalid', () => {
+  const c = .5, s = Math.sqrt(3) / 2, rim = { normal: [0, 0, 1], d: 0, support: 1 };
+  const panel = cell(0, [[0, 0, 0], [100, 0, 0], [100, 100 * c, 100 * s], [0, 100 * c, 100 * s]], undefined,
+    { origin: [0, 0, 0], u: [1, 0, 0], v: [0, c, s], normal: [0, -s, c] });
+  panel.boundaryPlanes = [rim, rim, null, null]; panel.supportPlanes = [rim];
+  const invalid = { ...panel, id: 1, valid: false };
+  const [solid, rejected] = buildPanelSolids([panel, invalid], { thickness: 20, radius: 2 });
+  assert.equal(solid.valid, true, solid.issues.join('; '));
+  assert.equal(rejected.valid, false);
+  assert.ok(solid.positions.every(point => point[2] >= -1e-7));
+  assert.ok(solid.cuts.flat().some(cut => cut.kind === 'source-boundary-plane'));
+  assert.ok(solid.positions.some(point => Math.abs(point[2]) < 1e-7));
+  closed(solid);
 });

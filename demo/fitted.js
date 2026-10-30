@@ -1,4 +1,5 @@
 import { ShapeUtils, Vector2 } from './vendor/three.core.js';
+import { inspectStockEnvelopes, buildPanelSolids } from './solids.js';
 
 // A shared vertex is solved once for every panel touching it. Independent
 // flattening is deliberately not used here: neighbouring edges remain identical.
@@ -53,10 +54,30 @@ function planeFor(ids, positions, reference, fixedOrigin = null) {
   return { origin, normal, u, v, d: dot(normal, origin), degenerate: eig[1].value < 1e-8 };
 }
 
-function intersection(planes, anchor, regularization = 0) {
+// A boundary face must contain its source-rim chord. Merely intersecting
+// freely fitted faces with the rim plane can move a near-parallel junction
+// a long way sideways along that plane.
+function fitAroundBoundary(ids, positions, reference, boundary) {
+  if (!boundary) return planeFor(ids, positions, reference);
+  const { origin, tangent, rimNormal } = boundary, side = normalize(cross(tangent, rimNormal));
+  let aa = 0, ab = 0, bb = 0;
+  for (const id of ids) {
+    const delta = sub(positions[id], origin), a = dot(delta, rimNormal), b = dot(delta, side);
+    aa += a * a; ab += a * b; bb += b * b;
+  }
+  const angle = .5 * Math.atan2(2 * ab, aa - bb);
+  let normal = normalize(add(scale(rimNormal, -Math.sin(angle)), scale(side, Math.cos(angle))));
+  if (dot(normal, reference) < 0) normal = scale(normal, -1);
+  const u = tangent, v = normalize(cross(normal, u));
+  return { origin, normal, u, v, d: dot(normal, origin), degenerate: aa + bb < 1e-8 };
+}
+
+function intersection(planes, anchor, regularization = 0, boundary = null) {
+  if (boundary) anchor = add(anchor, scale(boundary.normal, boundary.d - dot(boundary.normal, anchor)));
   const a = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
   for (const plane of planes) {
-    const n = plane.normal, residual = plane.d - dot(n, anchor);
+    const residual = plane.d - dot(plane.normal, anchor);
+    const n = boundary ? sub(plane.normal, scale(boundary.normal, dot(plane.normal, boundary.normal))) : plane.normal;
     for (let i = 0; i < 3; i++) {
       b[i] += n[i] * residual;
       for (let j = 0; j < 3; j++) a[i][j] += n[i] * n[j];
@@ -99,6 +120,45 @@ function buildNetwork(cells, straightness, corners = []) {
     const k = edgeKey(a, b);
     if (!edges.has(k)) edges.set(k, { a, b, owners: new Set() });
     edges.get(k).owners.add(ci); neighbors[a].add(b); neighbors[b].add(a);
+  }
+  // A planar source opening is a trim plane, shared by the complete rim.
+  // Detect it before simplifying paths, so tessellation and panel ownership
+  // cannot make separate, slightly different rim planes.
+  const boundaryNeighbors = new Map();
+  for (const edge of edges.values()) if (edge.owners.size === 1) {
+    for (const [a, b] of [[edge.a, edge.b], [edge.b, edge.a]]) {
+      if (!boundaryNeighbors.has(a)) boundaryNeighbors.set(a, new Set());
+      boundaryNeighbors.get(a).add(b);
+    }
+  }
+  const boundaryFor = new Map(), boundaryComponents = [], boundaryPaths = new Map(), boundaryOwners = new Map(), seenBoundary = new Set();
+  for (const start of boundaryNeighbors.keys()) {
+    if (seenBoundary.has(start)) continue;
+    const ids = [start]; seenBoundary.add(start);
+    for (let i = 0; i < ids.length; i++) for (const next of boundaryNeighbors.get(ids[i])) if (!seenBoundary.has(next)) {
+      seenBoundary.add(next); ids.push(next);
+    }
+    if (ids.length < 3 || ids.some(id => boundaryNeighbors.get(id).size !== 2)) continue;
+    const plane = planeFor(ids, points, [0, 0, 1]);
+    const span = Math.max(1, ...ids.map(id => norm(sub(points[id], plane.origin))));
+    const tolerance = Math.max(1e-5, span * 1e-7);
+    if (plane.degenerate || ids.some(id => Math.abs(dot(plane.normal, points[id]) - plane.d) > tolerance)) continue;
+    // A planar sheet's perimeter lies in its own face plane: it must remain
+    // free to extrude. A trim applies only where every incident source face
+    // meets the opening plane at a stable, nonparallel angle.
+    if (ids.some(id => [...owners[id]].some(ci => Math.abs(dot(normalize(cells[ci].plane.normal), plane.normal)) > .995))) continue;
+    let minimum = Infinity, maximum = -Infinity;
+    for (const cell of cells) for (const point of cell.positions) {
+      const distance = dot(plane.normal, point) - plane.d;
+      minimum = Math.min(minimum, distance); maximum = Math.max(maximum, distance);
+    }
+    const support = minimum >= -tolerance ? 1 : maximum <= tolerance ? -1 : 0;
+    const constraint = { normal: plane.normal, d: plane.d, support };
+    for (const id of ids) boundaryFor.set(id, constraint);
+    boundaryComponents.push(constraint);
+    const component = new Set(ids);
+    boundaryPaths.set(constraint, [...edges.values()].filter(edge => edge.owners.size === 1 && component.has(edge.a)).map(edge => [points[edge.a], points[edge.b]]));
+    boundaryOwners.set(constraint, new Set(ids.flatMap(id => [...owners[id]])));
   }
   const keep = new Set();
   for (let i = 0; i < points.length; i++) if (owners[i].size >= 3 || neighbors[i].size !== 2) keep.add(i);
@@ -145,7 +205,7 @@ function buildNetwork(cells, straightness, corners = []) {
   }));
   const sharedOwners = retained.map(() => new Set());
   loops.forEach((rings, ci) => rings.flat().forEach(id => sharedOwners[id].add(ci)));
-  return { points: retained.map(id => [...points[id]]), loops, owners: sharedOwners, tolerance, sourceVertexCount: points.length };
+  return { points: retained.map(id => [...points[id]]), loops, owners: sharedOwners, tolerance, sourceVertexCount: points.length, boundaryPlanes: retained.map(id => boundaryFor.get(id) || null), boundaryComponents, boundaryPaths, boundaryOwners, boundaryTolerance: tolerance };
 }
 
 function area2(ring) {
@@ -196,6 +256,130 @@ function touchesOrOverlaps(rings) {
   return false;
 }
 
+/** Search in face-plane space. Shared vertices are recomputed from all their
+ * incident planes for every candidate; a vertex-only correction would be
+ * undone by the shared stock offsets and could conceal a nonplanar panel. */
+function repairCoupledPlanes({ original, network, anchors, planes, groups, groupFor, adjacent,
+  displacementLimit, planarityTolerance, options, initialCells, buildCells, groupBoundaries, boundaryTargets, initialPoints, initialUnstable }) {
+  const thickness = Number(options.thickness), characteristicSize = Math.sqrt(original.reduce((sum, cell) => sum + cell.area, 0) / original.length);
+  const budget = Math.max(0, Math.min(480, Math.floor(Number(options.repairBudget ?? 240)) || 0));
+  const moveLimit = Math.min(displacementLimit * .25, characteristicSize * .15);
+  const shiftLimit = Math.min(moveLimit * .5, thickness * .3), angleLimit = Math.cos(Math.PI / 60);
+  const supports = network.boundaryComponents.filter(plane => plane.support);
+  const stockOptions = { thickness, outwardCenter: options.outwardCenter, flipDirection: options.flipDirection };
+  const metrics = { attempts: 0, acceptedSteps: 0, applied: false, warmStartAccepted: false,
+    initialInvalidFlat: initialCells.filter(cell => !cell.valid).length, finalInvalidFlat: initialCells.filter(cell => !cell.valid).length,
+    initialInvalidStock: 0, finalInvalidStock: 0, recoveredPanels: 0, recoveredPanelIds: [], maxVertexMove: 0, maxVertexMoveLimit: moveLimit,
+    initialMaxReferenceDisplacement: Math.max(...initialCells.map(cell => cell.maxReferenceDisplacement)) };
+  const baselinePoints = initialPoints;
+  const evaluate = trialPlanes => {
+    metrics.attempts++;
+    const unstable = new Set(); let overflow = 0;
+    const points = anchors.map((anchor, id) => {
+      const exact = intersection([...network.owners[id]].map(ci => trialPlanes[ci]), anchor, 0, network.boundaryPlanes[id]);
+      const excess = Math.max(norm(sub(exact, anchor)) - displacementLimit, norm(sub(exact, baselinePoints[id])) - moveLimit);
+      if (exact.some(value => !Number.isFinite(value)) || excess > 0) {
+        unstable.add(id); overflow += Number.isFinite(excess) ? Math.min(displacementLimit, excess) : displacementLimit;
+        return baselinePoints[id];
+      }
+      return exact;
+    });
+    // An already unstable fit still deserves a bounded repair attempt. Its
+    // diagnostic vertices remain explicitly invalid until the plane equations
+    // meet within both bounds; no clipped vertex becomes a fabricated part.
+    // Stable cold fits retain the original, stricter candidate search path.
+    if (unstable.size && !initialUnstable.size) return null;
+    let crossings = 0, penetration = 0;
+    const measureCrossings = rings => {
+      const pairs = crossingPairs(rings); crossings += pairs.length;
+      const distanceToLine = (p, a, b) => Math.abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / (Math.hypot(b[0] - a[0], b[1] - a[1]) || 1);
+      for (const [a, b] of pairs) penetration += Math.min(distanceToLine(a.a, b.a, b.b), distanceToLine(a.b, b.a, b.b), distanceToLine(b.a, a.a, a.b), distanceToLine(b.b, a.a, a.b));
+      return pairs.length;
+    };
+    const flatBad = new Set();
+    const cells = original.map((source, ci) => {
+      const plane = trialPlanes[ci], flatPositions = network.loops[ci].flat().map(id => points[id]);
+      const rings = network.loops[ci].map(ring => ring.map(id => { const d = sub(points[id], plane.origin); return [dot(d, plane.u), dot(d, plane.v)]; }));
+      const crossingCount = measureCrossings(rings);
+      const boundaryViolation = Math.max(0, ...flatPositions.flatMap(point => supports.map(plane => -(dot(plane.normal, point) - plane.d) * plane.support)));
+      const rimAdjustment = Math.max(0, ...network.loops[ci].flat().filter(id => boundaryTargets[id]).map(id => norm(sub(points[id], boundaryTargets[id])) - network.boundaryTolerance));
+      penetration += boundaryViolation + rimAdjustment;
+      const invalid = network.loops[ci].flat().some(id => unstable.has(id)) || source.sourceComponentCount > 1 || plane.degenerate || boundaryViolation > 1e-5 || rimAdjustment > 1e-5
+        || flatPositions.some(point => Math.abs(dot(point, plane.normal) - plane.d) > planarityTolerance)
+        || rings.some(ring => ring.length < 3 || Math.abs(area2(ring)) < 1e-8)
+        || crossingCount || touchesOrOverlaps(rings) || rings.slice(1).some(ring => !inside(ring[0], rings[0]));
+      if (invalid) flatBad.add(ci);
+      let offset = 0;
+      return { id: source.id, flatPositions, supportPlanes: supports, boundaryPlanes: network.loops[ci].flat().map(id => network.boundaryPlanes[id]), loops: network.loops[ci].map(ring => ring.map(() => offset++)), plane, valid: !invalid };
+    });
+    const envelopes = inspectStockEnvelopes(cells, stockOptions), bad = new Set();
+    envelopes.forEach((stock, ci) => { if (!stock.valid) bad.add(ci); penetration += stock.boundaryViolation || 0; for (const rings of stock.envelopes) measureCrossings(rings); });
+    const drift = points.reduce((sum, point, id) => { const d = sub(point, anchors[id]); return sum + dot(d, d); }, 0) / points.length;
+    return { planes: trialPlanes, points, bad, flatBad, unstable, score: overflow * 10 + bad.size * 1e6 + flatBad.size * 1e4 + crossings * 100 + penetration + drift * 1e-6 };
+  };
+  let best = evaluate(planes);
+  if (!best) {
+    metrics.initialInvalidStock = metrics.finalInvalidStock = inspectStockEnvelopes(initialCells, stockOptions).filter(stock => !stock.valid).length;
+    return { metrics };
+  }
+  metrics.initialInvalidStock = metrics.finalInvalidStock = best.bad.size;
+  if (!best.bad.size || budget < 2) return { metrics };
+  const baselinePlanes = planes;
+  const take = candidate => {
+    if (!candidate || [...candidate.bad].some(ci => !best.bad.has(ci)) || [...candidate.flatBad].some(ci => !best.flatBad.has(ci)) || candidate.score >= best.score - 1e-5) return false;
+    best = candidate; metrics.acceptedSteps++; return true;
+  };
+  const planeWithinBounds = (plane, initial) => dot(plane.normal, initial.normal) >= angleLimit && norm(sub(plane.origin, initial.origin)) <= shiftLimit;
+  const assignGroup = (trial, group, plane) => {
+    for (const ci of groups[group]) trial[ci] = dot(plane.normal, original[ci].plane.normal) >= 0 ? plane
+      : { ...plane, normal: scale(plane.normal, -1), v: scale(plane.v, -1), d: -plane.d };
+  };
+  const neighboringGroups = () => {
+    const result = new Set([...best.bad].map(ci => groupFor[ci]));
+    for (const ci of best.bad) for (const other of adjacent[ci]) result.add(groupFor[other]);
+    return [...result];
+  };
+  // Start from the same cold solution for every edit/reopen. A locally better
+  // warm proposal can consume the search budget on a worse path, so cached
+  // planes do not influence this bounded deterministic repair.
+  const firstStep = Math.min(2, thickness * .05, shiftLimit / 4);
+  for (const step of [firstStep, firstStep * 4, firstStep * .25]) {
+    for (const group of neighboringGroups()) {
+      if (metrics.attempts >= budget || !best.bad.size) break;
+      for (const axis of (groupBoundaries[group] ? ['v'] : ['offset', 'u', 'v'])) for (const sign of [-1, 1]) {
+        if (metrics.attempts >= budget) break;
+        const ci = groups[group][0], old = best.planes[ci], delta = sign * step;
+        const normal = axis === 'offset' ? old.normal : normalize(add(old.normal, scale(old[axis], delta / characteristicSize)));
+        const origin = axis === 'offset' ? add(old.origin, scale(normal, delta)) : old.origin;
+        const u = normalize(sub(old.u, scale(normal, dot(old.u, normal)))), v = normalize(cross(normal, u));
+        const plane = { ...old, normal, origin, u, v, d: dot(normal, origin) };
+        if (!planeWithinBounds(plane, baselinePlanes[ci])) continue;
+        const trial = best.planes.slice(); assignGroup(trial, group, plane);
+        take(evaluate(trial));
+      }
+    }
+  }
+  if (!metrics.acceptedSteps) return { metrics };
+  const repairedCells = buildCells(best.points, best.planes, best.unstable);
+  const originalBad = new Set(initialCells.filter(cell => !cell.valid).map(cell => cell.id));
+  const repairedBad = new Set(repairedCells.filter(cell => !cell.valid).map(cell => cell.id));
+  // The fast envelope objective never grants exportability. Before committing
+  // plane changes, validate complete unrounded meshes and keep every formerly
+  // valid panel valid; final rounded/carved construction still runs afterward.
+  const baseStock = buildPanelSolids(initialCells, { ...stockOptions, radius: 0 });
+  const finalStock = buildPanelSolids(repairedCells, { ...stockOptions, radius: 0 });
+  const baseBadStock = new Set(baseStock.filter(stock => !stock.valid).map(stock => stock.id));
+  const finalBadStock = new Set(finalStock.filter(stock => !stock.valid).map(stock => stock.id));
+  metrics.initialInvalidStock = metrics.finalInvalidStock = baseBadStock.size;
+  if ([...repairedBad].some(id => !originalBad.has(id)) || [...finalBadStock].some(id => !baseBadStock.has(id))
+    || finalBadStock.size >= baseBadStock.size && repairedBad.size >= originalBad.size) return { metrics };
+  metrics.applied = true; metrics.finalInvalidFlat = repairedBad.size; metrics.finalInvalidStock = finalBadStock.size;
+  metrics.recoveredPanelIds = [...baseBadStock].filter(id => !finalBadStock.has(id));
+  metrics.recoveredPanels = metrics.recoveredPanelIds.length;
+  metrics.maxVertexMove = Math.max(...best.points.map((point, id) => norm(sub(point, baselinePoints[id]))));
+  return { metrics, cells: repairedCells, points: best.points, planes: best.planes, unstable: best.unstable };
+}
+
 export function fitSharedPanels(result, options = {}) {
   if (!result?.cells?.length) return result;
   const original = result.surfaceCells || result.cells;
@@ -203,10 +387,33 @@ export function fitSharedPanels(result, options = {}) {
   const iterations = Math.max(0, Math.min(1000, options.iterations ?? 300));
   const planarityTolerance = options.planarityTolerance ?? .25;
   const network = buildNetwork(original, straightness, result.corners);
+  function enforceBoundary(point, id) {
+    const boundary = network.boundaryPlanes[id];
+    if (boundary) point = add(point, scale(boundary.normal, boundary.d - dot(boundary.normal, point)));
+    for (const plane of network.boundaryComponents) {
+      const distance = (dot(plane.normal, point) - plane.d) * plane.support;
+      if (plane.support && distance < 0) point = add(point, scale(plane.normal, -distance * plane.support));
+    }
+    return point;
+  }
   const anchors = network.points, faceIds = network.loops.map(rings => [...new Set(rings.flat())]);
   let positions = anchors.map(p => [...p]);
   let planes;
   const displacementLimit = options.maxDisplacement ?? Math.sqrt(original.reduce((sum, c) => sum + c.area, 0) / original.length) * .75;
+  function compatibleBoundaryGroups(members) {
+    for (const rim of network.boundaryComponents) {
+      const participating = members.filter(ci => faceIds[ci].some(id => network.boundaryPlanes[id] === rim));
+      if (participating.length < 2) continue;
+      const ids = [...new Set(participating.flatMap(ci => faceIds[ci].filter(id => network.boundaryPlanes[id] === rim)))];
+      const line = planeFor(ids, anchors, rim.normal);
+      if (ids.some(id => norm(cross(sub(anchors[id], line.origin), line.u)) > 1e-5)) return false;
+    }
+    return true;
+  }
+  const boundaryDistance = (point, id) => {
+    const rim = network.boundaryPlanes[id];
+    return rim ? Math.min(...network.boundaryPaths.get(rim).map(([a, b]) => segmentDistance(point, a, b))) : 0;
+  };
   // Near-flat areas in a rough mesh should share a plane. Otherwise three
   // numerically almost parallel planes can intersect arbitrarily far away.
   const groups = [], groupFor = new Array(original.length).fill(-1);
@@ -222,6 +429,7 @@ export function fitSharedPanels(result, options = {}) {
           const candidate = initialPlanes[other];
           if (Math.abs(dot(reference.normal, candidate.normal)) < Math.cos(5 * Math.PI / 180)) continue;
           if (Math.abs(dot(reference.normal, candidate.origin) - reference.d) > 5) continue;
+          if (!compatibleBoundaryGroups([...group, other])) continue;
           group.push(other); groupFor[other] = groups.length;
         }
       }
@@ -230,8 +438,36 @@ export function fitSharedPanels(result, options = {}) {
   }
   let groupIds = groups.map(group => [...new Set(group.flatMap(ci => faceIds[ci]))]);
   let groupOrigins = groups.map(group => scale(group.reduce((sum, ci) => add(sum, original[ci].seed), [0, 0, 0]), 1 / group.length));
+  function boundaryLines() {
+    return groupIds.map((ids, group) => {
+      const rims = new Map();
+      for (const id of ids) {
+        const rim = network.boundaryPlanes[id];
+        if (!rim) continue;
+        if (!rims.has(rim)) rims.set(rim, []);
+        rims.get(rim).push(id);
+      }
+      const entries = [...rims].filter(([, points]) => points.length > 1);
+      // A face spanning multiple openings may have incompatible source chords.
+      // Keep those planes coupled to both rims instead of privileging one.
+      if (entries.length !== 1) return null;
+      const entry = entries[0];
+      const [rim, boundaryIds] = entry;
+      if ([...network.boundaryOwners.get(rim)].every(ci => groups[group].includes(ci))) return null;
+      const endpoints = boundaryIds.filter(id => [...network.owners[id]].some(ci => !groups[group].includes(ci)));
+      // Keep the exact authored ends of an opening segment. A least-squares
+      // tangent can shift two nearly parallel neighbouring chords' crossing
+      // far along the rim, despite a small normal fitting error.
+      if (endpoints.length === 2) return { rim, origin: scale(add(anchors[endpoints[0]], anchors[endpoints[1]]), .5),
+        tangent: normalize(sub(anchors[endpoints[1]], anchors[endpoints[0]])), rimNormal: rim.normal };
+      const line = planeFor(boundaryIds, anchors, rim.normal);
+      return { rim, origin: line.origin, tangent: line.u, rimNormal: rim.normal };
+    });
+  }
+  let groupBoundaries = boundaryLines();
   function fittedPlanes(points) {
-    const fitted = groupIds.map((ids, i) => planeFor(ids, points, original[groups[i][0]].plane.normal, options.anchorPlanesToSeeds ? groupOrigins[i] : null));
+    const fitted = groupIds.map((ids, i) => groupBoundaries[i] ? fitAroundBoundary(ids, points, original[groups[i][0]].plane.normal, groupBoundaries[i])
+      : planeFor(ids, points, original[groups[i][0]].plane.normal, options.anchorPlanesToSeeds ? groupOrigins[i] : null));
     return original.map((cell, ci) => {
       const plane = fitted[groupFor[ci]];
       if (dot(plane.normal, cell.plane.normal) >= 0) return plane;
@@ -244,7 +480,7 @@ export function fitSharedPanels(result, options = {}) {
       planes = fittedPlanes(positions);
       const regularization = (anneal ? .03 * (1 - iteration / Math.max(1, count)) : 0) + .0001;
       positions = positions.map((point, id) => {
-        const candidate = intersection([...network.owners[id]].map(i => planes[i]), anchors[id], regularization);
+        const candidate = intersection([...network.owners[id]].map(i => planes[i]), anchors[id], regularization, network.boundaryPlanes[id]);
         const delta = sub(candidate, anchors[id]), distance = norm(delta);
         const bounded = distance > displacementLimit ? add(anchors[id], scale(delta, displacementLimit / distance)) : candidate;
         return add(scale(point, .2), scale(bounded, .8));
@@ -271,6 +507,7 @@ export function fitSharedPanels(result, options = {}) {
           if (distance > displacementLimit) positions[id] = add(anchors[id], scale(delta, displacementLimit / distance));
         }
       }
+      positions = positions.map(enforceBoundary);
     }
   }
   relax(iterations, true);
@@ -290,6 +527,7 @@ export function fitSharedPanels(result, options = {}) {
       const a = groupFor[ci], b = groupFor[other];
       if (a === b || Math.abs(dot(planes[ci].normal, planes[other].normal)) < Math.cos(.5 * Math.PI / 180)) continue;
       const members = [...groups[a], ...groups[b]], ids = [...new Set(members.flatMap(index => faceIds[index]))];
+      if (!compatibleBoundaryGroups(members)) continue;
       const candidate = planeFor(ids, positions, planes[ci].normal);
       if (candidate.degenerate || ids.some(id => Math.abs(dot(candidate.normal, sub(positions[id], candidate.origin))) > coplanarTolerance)) continue;
       groups[a] = members; groups[b] = [];
@@ -302,6 +540,7 @@ export function fitSharedPanels(result, options = {}) {
     groups.forEach((group, index) => group.forEach(ci => { groupFor[ci] = index; }));
     groupIds = groups.map(group => [...new Set(group.flatMap(ci => faceIds[ci]))]);
     groupOrigins = groups.map(group => scale(group.reduce((sum, ci) => add(sum, original[ci].seed), [0, 0, 0]), 1 / group.length));
+    groupBoundaries = boundaryLines();
     relax(Math.min(iterations, 100), false);
   }
   // A short shared edge can reverse while neighbouring planes are settling,
@@ -309,7 +548,7 @@ export function fitSharedPanels(result, options = {}) {
   // the coupled solve; changing a final vertex alone would break flatness.
   planes = fittedPlanes(positions);
   const provisional = positions.map((point, id) => {
-    const exact = intersection([...network.owners[id]].map(i => planes[i]), anchors[id]);
+    const exact = intersection([...network.owners[id]].map(i => planes[i]), anchors[id], 0, network.boundaryPlanes[id]);
     return exact.every(Number.isFinite) && norm(sub(exact, anchors[id])) <= displacementLimit ? exact : point;
   });
   const crossingPanels = network.loops.map((rings, ci) => crosses(rings.map(ring => ring.map(id => {
@@ -332,7 +571,7 @@ export function fitSharedPanels(result, options = {}) {
   // can trade one crossing for another or reverse the opening's mouth.
   planes = fittedPlanes(positions);
   const shapeTrial = positions.map((point, id) => {
-    const exact = intersection([...network.owners[id]].map(i => planes[i]), anchors[id]);
+    const exact = intersection([...network.owners[id]].map(i => planes[i]), anchors[id], 0, network.boundaryPlanes[id]);
     return exact.every(Number.isFinite) && norm(sub(exact, anchors[id])) <= displacementLimit ? exact : point;
   });
   for (let ci = 0; ci < network.loops.length; ci++) {
@@ -355,8 +594,8 @@ export function fitSharedPanels(result, options = {}) {
   if (shapeConstraints.length) relax(Math.min(iterations, 300), false);
   planes = fittedPlanes(positions);
   const unstableVertices = new Set();
-  const solved = positions.map((point, id) => {
-    const exact = intersection([...network.owners[id]].map(i => planes[i]), anchors[id]);
+  let solved = positions.map((point, id) => {
+    const exact = intersection([...network.owners[id]].map(i => planes[i]), anchors[id], 0, network.boundaryPlanes[id]);
     if (norm(sub(exact, anchors[id])) > displacementLimit || exact.some(x => !Number.isFinite(x))) {
       unstableVertices.add(id);
       // Keep a shared, bounded preview and report the unmet planarity instead
@@ -365,49 +604,72 @@ export function fitSharedPanels(result, options = {}) {
     }
     return exact;
   });
-  const cells = original.map((source, ci) => {
-    const plane = planes[ci], globalRings = network.loops[ci];
-    const projectedRings = globalRings.map(ring => ring.map(id => { const d = sub(solved[id], plane.origin); return [dot(d, plane.u), dot(d, plane.v)]; }));
-    const order = projectedRings.map((ring, i) => ({ i, area: Math.abs(area2(ring)) })).sort((a, b) => b.area - a.area).map(x => x.i);
-    const rings = order.map(i => globalRings[i]), outline2d = order.map(i => projectedRings[i]);
-    const sourcePositions = [], flatPositions = [], loops = [], sharedVertexIds = [];
-    for (const ring of rings) {
-      const indices = [];
-      for (const id of ring) { indices.push(flatPositions.length); sourcePositions.push(anchors[id]); flatPositions.push(solved[id]); sharedVertexIds.push(id); }
-      loops.push(indices);
-    }
-    const issues = [];
-    if (source.sourceComponentCount > 1) issues.push('This cell contains separate source-surface pieces and cannot form one panel. Split its source region first.');
-    const maxPlanarityError = Math.max(0, ...flatPositions.map(p => Math.abs(dot(plane.normal, p) - plane.d)));
-    const maxReferenceDisplacement = Math.max(0, ...sharedVertexIds.map(id => norm(sub(solved[id], anchors[id]))));
-    if (maxPlanarityError > planarityTolerance) issues.push(`This panel is not flat enough (${maxPlanarityError.toFixed(2)} mm). Move its centre or change the size.`);
-    if (sharedVertexIds.some(id => unstableVertices.has(id))) issues.push('The shared edges cannot meet nearby while keeping this panel flat. Move its centre or use smaller cells.');
-    if (plane.degenerate || loops.some(ring => ring.length < 3) || outline2d.some(ring => Math.abs(area2(ring)) < 1e-8 || new Set(ring.map(key)).size < 3)) issues.push('This panel has a collapsed outline. Move its centre.');
-    if (outline2d.slice(1).some(ring => !inside(ring[0], outline2d[0]))) issues.push('This cell has separate outlines. Move its centre or use smaller cells.');
-    if (crosses(outline2d)) issues.push('The fitted outline crosses itself. Move its centre or use smaller cells.');
-    else if (touchesOrOverlaps(outline2d)) issues.push('The fitted outline touches or overlaps itself. Its openings and boundary must remain separate.');
-    let triangles = [];
-    if (outline2d.length && loops.every(ring => ring.length >= 3)) {
-      const vectors = outline2d.map(ring => ring.map(p => new Vector2(...p)));
-      triangles = ShapeUtils.triangulateShape(vectors[0], vectors.slice(1));
-      for (const triangle of triangles) {
-        const [a, b, c] = triangle.map(i => flatPositions[i]);
-        if (dot(cross(sub(b, a), sub(c, a)), plane.normal) < 0) [triangle[1], triangle[2]] = [triangle[2], triangle[1]];
-      }
-    }
-    if (!triangles.length) issues.push('This panel has no usable area.');
-    const expectedArea = outline2d.length ? Math.abs(area2(outline2d[0])) - outline2d.slice(1).reduce((sum, ring) => sum + Math.abs(area2(ring)), 0) : 0;
-    const area = triangles.reduce((sum, ids) => { const [a, b, c] = ids.map(i => flatPositions[i]); return sum + norm(cross(sub(b, a), sub(c, a))) * .5; }, 0);
-    if (Math.abs(area - expectedArea) > Math.max(1, Math.abs(expectedArea) * .001)) issues.push('The fitted outline could not be triangulated reliably.');
-    const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
-    for (const ring of outline2d) for (const p of ring) for (let k = 0; k < 2; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]); }
-    const deviations = source.positions.map(p => Math.abs(dot(plane.normal, p) - plane.d));
-    return { ...source, positions: sourcePositions, flatPositions, loops, outline2d, triangles, plane,
-      sharedVertexIds, area, sourceArea: source.area, width: max[0] - min[0], height: max[1] - min[1], bounds2d: { min, max },
-      loopAreas: outline2d.map(area2), holeCount: Math.max(0, loops.length - 1), maxSeamGap: 0,
-      maxDeviation: Math.max(0, ...deviations), rmsDeviation: Math.sqrt(deviations.reduce((sum, d) => sum + d * d, 0) / (deviations.length || 1)),
-      maxPlanarityError, maxReferenceDisplacement, valid: issues.length === 0, issues, fittedShared: true };
+  const boundaryTargets = anchors.map((anchor, id) => {
+    const rim = network.boundaryPlanes[id];
+    if (!rim) return null;
+    const chords = [...new Set([...network.owners[id]].map(ci => groupFor[ci]))].map(group => groupBoundaries[group]).filter(chord => chord?.rim === rim);
+    const constraints = chords.map(chord => {
+      const normal = normalize(cross(chord.tangent, rim.normal));
+      return { normal, d: dot(normal, chord.origin) };
+    });
+    return intersection(constraints, anchor, 0, rim);
   });
+  const boundaryAdjustment = (point, id) => boundaryTargets[id] ? norm(sub(point, boundaryTargets[id])) : 0;
+  const maxBoundaryApproximation = Math.max(0, ...boundaryTargets.map((point, id) => point ? boundaryDistance(point, id) : 0));
+  function buildCells(solved, planes, unstableVertices) {
+    return original.map((source, ci) => {
+      const plane = planes[ci], globalRings = network.loops[ci];
+      const projectedRings = globalRings.map(ring => ring.map(id => { const d = sub(solved[id], plane.origin); return [dot(d, plane.u), dot(d, plane.v)]; }));
+      const order = projectedRings.map((ring, i) => ({ i, area: Math.abs(area2(ring)) })).sort((a, b) => b.area - a.area).map(x => x.i);
+      const rings = order.map(i => globalRings[i]), outline2d = order.map(i => projectedRings[i]);
+      const sourcePositions = [], flatPositions = [], loops = [], sharedVertexIds = [];
+      for (const ring of rings) {
+        const indices = [];
+        for (const id of ring) { indices.push(flatPositions.length); sourcePositions.push(anchors[id]); flatPositions.push(solved[id]); sharedVertexIds.push(id); }
+        loops.push(indices);
+      }
+      const issues = [];
+      if (source.sourceComponentCount > 1) issues.push('This cell contains separate source-surface pieces and cannot form one panel. Split its source region first.');
+      const maxPlanarityError = Math.max(0, ...flatPositions.map(p => Math.abs(dot(plane.normal, p) - plane.d)));
+      const maxReferenceDisplacement = Math.max(0, ...sharedVertexIds.map(id => norm(sub(solved[id], anchors[id]))));
+      if (flatPositions.some(point => network.boundaryComponents.some(plane => plane.support && (dot(plane.normal, point) - plane.d) * plane.support < -1e-5))) issues.push('The fitted panel extends past a planar source opening. Move its centre or reshape the nearby corners.');
+      if (sharedVertexIds.some(id => boundaryAdjustment(solved[id], id) > network.boundaryTolerance + 1e-5)) issues.push(`The fitted rim moves more than ${network.boundaryTolerance.toFixed(2)} mm beyond its source boundary chords. Reshape its nearby cells.`);
+      if (maxPlanarityError > planarityTolerance) issues.push(`This panel is not flat enough (${maxPlanarityError.toFixed(2)} mm). Move its centre or change the size.`);
+      if (sharedVertexIds.some(id => unstableVertices.has(id))) issues.push('The shared edges cannot meet nearby while keeping this panel flat. Move its centre or use smaller cells.');
+      if (plane.degenerate || loops.some(ring => ring.length < 3) || outline2d.some(ring => Math.abs(area2(ring)) < 1e-8 || new Set(ring.map(key)).size < 3)) issues.push('This panel has a collapsed outline. Move its centre.');
+      if (outline2d.slice(1).some(ring => !inside(ring[0], outline2d[0]))) issues.push('This cell has separate outlines. Move its centre or use smaller cells.');
+      if (crosses(outline2d)) issues.push('The fitted outline crosses itself. Move its centre or use smaller cells.');
+      else if (touchesOrOverlaps(outline2d)) issues.push('The fitted outline touches or overlaps itself. Its openings and boundary must remain separate.');
+      let triangles = [];
+      if (outline2d.length && loops.every(ring => ring.length >= 3)) {
+        const vectors = outline2d.map(ring => ring.map(p => new Vector2(...p)));
+        triangles = ShapeUtils.triangulateShape(vectors[0], vectors.slice(1));
+        for (const triangle of triangles) {
+          const [a, b, c] = triangle.map(i => flatPositions[i]);
+          if (dot(cross(sub(b, a), sub(c, a)), plane.normal) < 0) [triangle[1], triangle[2]] = [triangle[2], triangle[1]];
+        }
+      }
+      if (!triangles.length) issues.push('This panel has no usable area.');
+      const expectedArea = outline2d.length ? Math.abs(area2(outline2d[0])) - outline2d.slice(1).reduce((sum, ring) => sum + Math.abs(area2(ring)), 0) : 0;
+      const area = triangles.reduce((sum, ids) => { const [a, b, c] = ids.map(i => flatPositions[i]); return sum + norm(cross(sub(b, a), sub(c, a))) * .5; }, 0);
+      if (Math.abs(area - expectedArea) > Math.max(1, Math.abs(expectedArea) * .001)) issues.push('The fitted outline could not be triangulated reliably.');
+      const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+      for (const ring of outline2d) for (const p of ring) for (let k = 0; k < 2; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]); }
+      const deviations = source.positions.map(p => Math.abs(dot(plane.normal, p) - plane.d));
+      return { ...source, positions: sourcePositions, flatPositions, loops, outline2d, triangles, plane,
+        sharedVertexIds, supportPlanes: network.boundaryComponents.filter(plane => plane.support), boundaryPlanes: sharedVertexIds.map(id => network.boundaryPlanes[id]), area, sourceArea: source.area, width: max[0] - min[0], height: max[1] - min[1], bounds2d: { min, max },
+        loopAreas: outline2d.map(area2), holeCount: Math.max(0, loops.length - 1), maxSeamGap: 0,
+        maxDeviation: Math.max(0, ...deviations), rmsDeviation: Math.sqrt(deviations.reduce((sum, d) => sum + d * d, 0) / (deviations.length || 1)),
+        maxPlanarityError, maxReferenceDisplacement, valid: issues.length === 0, issues, fittedShared: true };
+    });
+  }
+  let cells = buildCells(solved, planes, unstableVertices), repair = null;
+  if (Number.isFinite(options.thickness) && options.thickness > 0 && iterations > 0) {
+    const candidate = repairCoupledPlanes({ original, network, anchors, planes, groups, groupFor, adjacent,
+      displacementLimit, planarityTolerance, options, initialCells: cells, buildCells, groupBoundaries, boundaryTargets, initialPoints: solved, initialUnstable: unstableVertices });
+    repair = candidate.metrics;
+    if (candidate.cells) { cells = candidate.cells; solved = candidate.points; planes = candidate.planes; unstableVertices.clear(); for (const id of candidate.unstable) unstableVertices.add(id); }
+  }
   const edgeOwners = new Map(), vertexNeighbors = solved.map(() => new Set()), boundaryVertices = new Set();
   network.loops.forEach((rings, ci) => rings.forEach(ring => ring.forEach((a, i) => {
     const b = ring[(i + 1) % ring.length], k = edgeKey(a, b);
@@ -430,7 +692,7 @@ export function fitSharedPanels(result, options = {}) {
     const kind = directions.length === 3 ? (Math.max(...angles) > 160 ? 'T' : 'Y') : 'other';
     junctions.push({ position: solved[id], kind, angles, cells: owners.map(ci => cells[ci].id) });
   }
-  const stats = { ...result.stats,
+  const stats = { ...result.stats, ...(repair ? { repair } : {}), planarBoundaryCount: network.boundaryComponents.length, maxBoundaryDisplacement: Math.max(0, ...solved.map(boundaryDistance)), boundaryDisplacementLimit: maxBoundaryApproximation + network.boundaryTolerance, maxBoundaryApproximation, maxBoundaryAdjustment: Math.max(0, ...solved.map(boundaryAdjustment)), boundaryAdjustmentLimit: network.boundaryTolerance,
     maxSeamGap: 0, rmsSeamGap: 0, maxPlanarityError: Math.max(...cells.map(c => c.maxPlanarityError)),
     maxReferenceDisplacement: Math.max(...cells.map(c => c.maxReferenceDisplacement)),
     maxDeviation: Math.max(...cells.map(c => c.maxDeviation)),

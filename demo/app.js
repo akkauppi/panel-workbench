@@ -5,11 +5,12 @@ import { analyzeModel, createMergeGroups } from './geometry.js';
 import { exportSolidsOBJ, exportSolidsSTL } from './solids.js';
 import { captureDesign, createStudy, readStudy, immutableLayout } from './study.js';
 import { cornerDisplayPosition, cornerProjectionPatch, projectCornerDisplacement } from './corner-drag.js';
-import { previewCornerMove, createCornerSketch } from './layout-edit.js';
+import { previewCornerMove, createCornerSketch, layoutCellHandle } from './layout-edit.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
 import { readPattern } from './pattern.js';
+import { verifyRhino6Export } from './rhino-format.js';
 
 const exampleCatalog = [...EXAMPLES, ...LOCAL_EXAMPLES];
 
@@ -88,7 +89,7 @@ function updateWorkspaceChrome() {
   $('document-name').textContent = state.name;
   document.title = `${state.name} — Panel Workbench`;
   $('view-name').textContent = viewNames[state.view];
-  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit && state.pattern.type === 'organic' ? 'Move cells' : 'Inspect cells';
+  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
   $('ribbon-selection-context').textContent = state.selectedIds.length > 1 ? `${state.selectedIds.length} cells selected`
     : state.selected != null ? `Cell ${panelId(state.selected)}` : 'No selection';
   for (const button of document.querySelectorAll('[data-browser-view]')) {
@@ -190,12 +191,12 @@ worker.onmessage = ({ data }) => {
       state.ready = true;
       state.solved = true;
       state.revision++;
-      if (drag?.kind !== 'corner' && !cornerPending) {
+      if (!directDrag() && !cornerPending) {
         buildCells();
         if (!drag) buildSeeds();
         buildCorners();
         updateInspector(); updateStats();
-        setStatus(`${state.cells.length} cells · ${state.cornerMode ? 'Drag a shared corner · Release to apply · Escape cancels' : state.directBase ? 'Directly edited layout · Select cells to merge' : state.pattern.type !== 'organic' ? 'Structured layout · Drag corners or select cells to merge' : state.mergeGroups.length ? 'Merged layout · Select cells to merge again' : 'Drag a dot to reshape · Shift-click cells to merge'}`);
+        setStatus(`${state.cells.length} cells · ${state.cornerMode ? 'Drag a shared corner · Release to apply · Escape cancels' : state.multiSelect ? 'Click cells to add or remove them from the selection' : state.edit ? 'Drag a dot to reshape · Shift-click cells to merge' : 'Click a panel to inspect · Drag the model to orbit'}`);
       }
     }
   }
@@ -253,6 +254,8 @@ function canArrange() {
   const sourceReady = state.view === 'surface' && !!state.sourceSurface;
   return !state.generating && !cornerPending && (sourceReady || state.solved && !state.busy && !state.pending);
 }
+function graphCentreMode() { return !!state.directBase || !!state.cornerEdits.length || !!state.mergeGroups.length || state.pattern.type !== 'organic'; }
+function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell'; }
 function buildCells() {
   disposeGroup(cellGroup);
   for (const cell of arrangementCells()) {
@@ -295,14 +298,18 @@ function buildCells() {
 }
 function buildSeeds() {
   disposeGroup(seedGroup);
-  if (!state.analysis || state.pattern.type !== 'organic') { seedGroup.visible = false; return; }
+  if (!state.analysis) { seedGroup.visible = false; return; }
   const radius = state.analysis.dimensions.reduce((a, b) => Math.max(a, b), 1) * 0.0045;
   seedGeometry?.dispose(); seedMaterial?.dispose();
   seedGeometry = new THREE.BoxGeometry(radius * 1.7, radius * 1.7, radius * 1.7);
   seedMaterial = new THREE.MeshBasicMaterial({ color: '#245db4' });
   const mergedMembers = new Set(state.mergeGroups.flatMap(group => group.members));
-  for (const seed of state.seeds) {
-    if (mergedMembers.has(seed.id)) continue;
+  const graph = graphCentreMode();
+  const handles = graph ? (state.layout?.cells || []).flatMap(cell => {
+    try { return [{ id: cell.id, ...layoutCellHandle(state.layout, cell.id) }]; } catch { return []; }
+  }) : state.seeds;
+  for (const seed of handles) {
+    if (!graph && mergedMembers.has(seed.id)) continue;
     const dot = new THREE.Mesh(seedGeometry, seedMaterial);
     dot.position.fromArray(seed.position);
     if (state.view === 'flat' || state.view === 'solid') {
@@ -315,9 +322,10 @@ function buildSeeds() {
       }
     }
     dot.userData.seedId = seed.id;
+    if (graph) dot.userData.cellHandle = seed;
     seedGroup.add(dot);
   }
-  seedGroup.visible = $('show-seeds').checked && !state.cornerMode && !state.cornerEdits.length && !state.directBase && state.view !== 'reference' && state.explode === 0;
+  seedGroup.visible = $('show-seeds').checked && !state.cornerMode && state.view !== 'reference' && state.explode === 0;
 }
 function buildCorners() {
   disposeGroup(cornerGroup);
@@ -336,7 +344,7 @@ function buildCorners() {
   cornerGroup.updateMatrixWorld(true);
 }
 function updateCornerPositions() {
-  if (!cornerGroup.visible || state.view !== 'solid' || drag?.kind === 'corner' || cornerPending) return;
+  if (!cornerGroup.visible || state.view !== 'solid' || directDrag() || cornerPending) return;
   const cameraPosition = camera.position.toArray();
   for (const handle of cornerGroup.children) {
     const position = cornerDisplayPosition(handle.userData.corner, state.view, cameraPosition);
@@ -465,10 +473,10 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
   if (model.vertices.some(p => p.length !== 3) || model.triangles.some(t => t.length !== 3 || t.some(i => !Number.isInteger(i) || i < 0 || i >= model.vertices.length))) throw new Error('The model contains invalid face indices or coordinates.');
   const analysis = analyzeModel(model);
+  cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
   $('import-note').textContent = ''; $('import-note').hidden = true;
   state.rawModel = rawModel; state.name = name; state.model = model; state.analysis = analysis;
   cancelPendingEdit();
-  cancelCornerDrag(); cancelCornerPending();
   generationSequence++; state.generating = false;
   state.sourceSurface = null;
   state.modelRevision++; state.selected = null; state.selectedIds = []; state.history = []; state.future = []; state.ready = false; state.cells = []; state.result = null;
@@ -519,6 +527,10 @@ function updateStats() {
   $('planarity-error').textContent = mm(s.maxPlanarityError);
   const solids = state.result.solids || [];
   $('stock-check').textContent = state.sourceSurface ? 'Updating…' : `${solids.filter(s => s.valid).length}/${solids.length} ${state.carve ? 'carved panels fit' : 'solids resolved'}`;
+  const repair = s.repair;
+  $('fit-repair-note').hidden = !!state.sourceSurface || !repair?.applied;
+  $('fit-repair-note').textContent = repair?.applied
+    ? `Automatic fitting recovered ${repair.recoveredPanels} stock panels. Largest repair adjustment: ${mm(repair.maxVertexMove)}. Source seams stay as drawn.` : '';
   const quality = state.result.quality;
   $('convex-check').textContent = quality ? `${quality.convexCount}/${quality.totalCount}` : '—';
   if (state.sourceSurface) for (const id of ['fit-max', 'seam-gap', 'planarity-error', 'convex-check']) $(id).textContent = '—';
@@ -683,7 +695,7 @@ function redoEdit() {
 function updateEditAvailability() {
   updateWorkspaceChrome();
   $('stage').classList.toggle('is-calculating', state.generating || state.busy || !!state.pending);
-  const waiting = state.generating || state.busy || !!state.pending || !state.solved || !!cornerPending || drag?.kind === 'corner';
+  const waiting = state.generating || state.busy || !!state.pending || !state.solved || !!cornerPending || directDrag();
   $('undo-move').disabled = !state.history.length && !pendingEdit && !cornerPending;
   $('redo-edit').disabled = !state.future.length || !!pendingEdit;
   $('regenerate').disabled = !state.ready || waiting;
@@ -694,8 +706,10 @@ function updateEditAvailability() {
   $('reset-corners').textContent = state.directBase ? 'Reset direct edits' : 'Reset corners';
   $('reset-corners').title = state.directBase ? 'Restore the layout before the first direct edit, including its earlier corner edits and merges.' : 'Clear legacy corner targets while keeping merged cells.';
   $('allow-cell-removal').disabled = !canArrange() || !!drag;
-  $('edit-toggle').disabled = state.pattern.type !== 'organic' || !!state.cornerEdits.length || !!state.directBase;
-  $('move-cells-help').textContent = state.pattern.type !== 'organic' ? 'Use Drag corners or Merge cells to reshape this layout.' : state.directBase ? 'Direct edits keep generated centres fixed. Reset direct edits to move centres again.' : state.cornerEdits.length ? 'Corner edits keep cell centres fixed. Reset corners to move centres again.' : 'Drag a centre on the surface to stretch the surrounding cells. Merged cell centres stay fixed.';
+  $('edit-toggle').disabled = !state.ready || !!drag || !!cornerPending || state.generating;
+  $('move-cells-help').textContent = graphCentreMode()
+    ? 'Drag a centre to move its adjoining corners together on the shell. Earlier edits are preserved. Release checks for crossed seams; Escape cancels.'
+    : 'Drag a centre on the surface to stretch the surrounding cells. After corner edits, centres move the authored corners together.';
   $('merge-cells').disabled = true;
   if (state.selectedIds.length < 2) {
     $('merge-status').textContent = state.selectedIds.length ? '1 cell selected. Add a neighbouring cell to merge.' : 'Select adjoining cells to remove their shared seam.';
@@ -747,13 +761,10 @@ $('merge-cells').addEventListener('click', () => {
 $('undo-move').addEventListener('click', undoEdit);
 $('redo-edit').addEventListener('click', redoEdit);
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && state.generating) {
-    event.preventDefault(); cancelGeneration();
-    setStatus('Arrangement cancelled. The current layout is kept.'); return;
-  }
-  if (event.key === 'Escape' && (drag?.kind === 'corner' || cornerPending)) {
-    event.preventDefault(); cancelCornerDrag(); cancelCornerPending();
-    setStatus('Corner move cancelled.'); return;
+  if (event.key === 'Escape') {
+    // Keep native Escape dismissal available for idle popovers and controls.
+    if (drag || cornerPending || state.generating) event.preventDefault();
+    resetInteraction(); return;
   }
   const active = document.activeElement;
   if (!(event.ctrlKey || event.metaKey) || active?.isContentEditable || active?.tagName === 'TEXTAREA' ||
@@ -767,22 +778,65 @@ function updateViewportHint() {
   junctionGroup.visible = !state.cornerMode;
   $('viewport-hint').textContent = state.view === 'reference' ? 'Drag to orbit · Scroll to zoom'
     : state.cornerMode ? 'Drag a corner · Alt suppresses snapping · Release to apply · Esc cancels'
-    : state.pattern.type !== 'organic' ? 'Select cells · Shift-click to add · Drag to orbit · Scroll to zoom' : 'Drag a handle to edit · Drag the model to orbit · Scroll to zoom';
+    : state.multiSelect ? 'Click cells to add or remove them · Drag to orbit · Scroll to zoom'
+    : state.edit ? 'Drag a handle to edit · Drag the model to orbit · Scroll to zoom'
+    : 'Click a panel to inspect · Drag to orbit · Scroll to zoom';
   $('corner-help').textContent = 'Cells previews adjoining seams while you drag. Release to accept the layout and fit panels in the background. Hold Alt to suppress joining. Amber endpoints follow their boundary; Esc cancels.';
 }
 function cancelCornerPending() {
   if (!cornerPending) return;
   cornerSequence++; cornerPending = null;
   $('corner-status').textContent = 'Edit cancelled. The accepted layout is kept.';
-  clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildCorners(); updateInspector(); updateStats(); updateEditAvailability(); updateExportAvailability();
+  clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateStats(); updateEditAvailability(); updateExportAvailability();
 }
 function cancelCornerDrag() {
-  if (drag?.kind !== 'corner') return;
+  if (!directDrag()) return;
   const pointerId = drag.pointerId;
   drag = null; down = null; controls.enabled = true; viewport.style.cursor = 'default';
-  $('corner-status').textContent = 'Corner move cancelled. The accepted layout is kept.';
+  $('corner-status').textContent = 'Move cancelled. The accepted layout is kept.';
   if (renderer.domElement.hasPointerCapture(pointerId)) renderer.domElement.releasePointerCapture(pointerId);
-  clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildCorners(); updateInspector(); updateStats(); updateEditAvailability(); updateExportAvailability();
+  clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateStats(); updateEditAvailability(); updateExportAvailability();
+}
+function cancelCentreDrag() {
+  if (!drag || directDrag()) return;
+  const moved = drag;
+  drag = null; down = null;
+  clearTimeout(dragTimer); dragTimer = null;
+  controls.enabled = true; viewport.style.cursor = 'default';
+  if (renderer.domElement.hasPointerCapture(moved.pointerId)) renderer.domElement.releasePointerCapture(moved.pointerId);
+  if (moved.changed && moved.modelRevision === state.modelRevision) {
+    const restored = captureDesign(state);
+    const seed = restored.seeds.find(seed => seed.id === moved.seed.id);
+    const original = moved.before.design.seeds.find(seed => seed.id === moved.seed.id);
+    seed.position = [...original.position];
+    restored.layout = moved.before.design.layout;
+    Object.assign(state, restored);
+    state.selectedIds = [...moved.before.selectedIds]; state.selected = state.selectedIds.at(-1) ?? null;
+    state.selectedCorner = moved.before.selectedCorner;
+    // A debounced or already-running drag solve must never replace the
+    // restored design. Let an in-flight reply drain through the normal queue.
+    state.requested++; state.pending = null;
+    if (JSON.stringify(restored) === JSON.stringify(moved.before.design)) {
+      Object.assign(state, moved.derivedBefore); state.solved = true;
+      setBusy(state.busy);
+    } else requestLayout(); // Preserve any separately entered setting.
+  }
+  buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateStats(); updateEditAvailability(); updateExportAvailability();
+}
+function resetInteraction() {
+  const generating = state.generating, moving = !!drag || !!cornerPending;
+  cancelGeneration(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
+  // Escape ends the editing tool, but retains an entered slider value.
+  finishPendingEdit();
+  state.edit = false; state.cornerMode = false; state.multiSelect = false;
+  state.selectedCorner = null; down = null; hoverId = null;
+  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select']) $(id).setAttribute('aria-pressed', 'false');
+  controls.enabled = true; viewport.style.cursor = 'default';
+  clearCornerSketch(); disposeGroup(cornerGuide);
+  for (const object of cellGroup.children) if (object.isMesh) object.material.emissive.set('#000000');
+  selectCell(null); buildSeeds(); buildCorners(); updateViewportHint(); updateStats(); updateEditAvailability(); updateExportAvailability();
+  $('corner-status').textContent = moving ? 'Move cancelled. The accepted layout is kept.' : '';
+  setStatus(`${generating ? 'Arrangement cancelled. ' : moving ? 'Move cancelled. ' : ''}Selection cleared · ${state.view === 'reference' ? 'Inspect source' : 'Inspect cells'}`);
 }
 function onBoundary(point, path) {
   let best = null, distance = Infinity;
@@ -800,9 +854,9 @@ async function commitCornerMove(moved) {
 }
 async function commitDirectEdit(transaction, before) {
   const sequence = ++cornerSequence, modelRevision = state.modelRevision;
-  const merging = transaction.type === 'merge-cells';
-  cornerPending = { sequence, before, kind: merging ? 'merge' : 'corner' };
-  $('corner-status').textContent = merging ? 'Checking the cell merge…' : 'Checking the corner move…';
+  const merging = transaction.type === 'merge-cells', movingCell = transaction.type === 'move-cell';
+  cornerPending = { sequence, before, kind: merging ? 'merge' : movingCell ? 'cell' : 'corner' };
+  $('corner-status').textContent = merging ? 'Checking the cell merge…' : movingCell ? 'Checking the centre move…' : 'Checking the corner move…';
   setStatus($('corner-status').textContent); updateEditAvailability(); updateExportAvailability();
   try {
     const { layout, change, surface } = await validateDesignGeometry({ model: state.model, layout: state.layout, transaction });
@@ -821,7 +875,7 @@ async function commitDirectEdit(transaction, before) {
     state.selectedCorner = change?.survivingCornerId ?? null;
     recordEdit(before);
     const removed = change?.removedCellIds ?? [];
-    $('corner-status').textContent = merging ? 'Cells merged. The edited layout is preserved.' : removed.length
+    $('corner-status').textContent = merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
       ? `Corner applied · Removed ${removed.map(panelId).join(', ')}. Undo restores them.`
       : change?.collapsedEdgeIds?.length ? 'Corners joined. Panels refit the edited layout.' : 'Corner applied. Panels refit the edited layout.';
     clearCornerSketch();
@@ -833,7 +887,7 @@ async function commitDirectEdit(transaction, before) {
   } finally {
     if (sequence === cornerSequence) {
       cornerPending = null; clearCornerSketch(); disposeGroup(cornerGuide);
-      if (!drag) { buildCells(); buildCorners(); updateInspector(); updateStats(); }
+      if (!drag) { buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateStats(); }
       updateEditAvailability(); updateExportAvailability();
     }
   }
@@ -914,13 +968,33 @@ renderer.domElement.addEventListener('pointerdown', event => {
       event.stopImmediatePropagation(); event.preventDefault(); return;
     }
   }
-  if (!state.edit || !seedGroup.visible || state.multiSelect || event.shiftKey || !state.solved) return;
+  if (!state.edit || !seedGroup.visible || state.multiSelect || event.shiftKey || !canArrange()) return;
   const hit = raycaster.intersectObjects(seedGroup.children)[0];
   const surfaceHit = sourceMesh && raycaster.intersectObject(sourceMesh)[0];
   if (!hit || (state.view === 'surface' && surfaceHit && hit.distance > surfaceHit.distance + state.size * 0.1)) return;
+  if (hit.object.userData.cellHandle) {
+    const handle = hit.object.userData.cellHandle;
+    const sourceStart = vectors(handle.position), displayStart = hit.object.position.clone();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), displayStart);
+    const pointerStart = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+    if (!pointerStart) return;
+    let patch;
+    try { patch = cornerProjectionPatch(state.model, { position: handle.position, radius: handle.radius ?? state.size * 2 }); }
+    catch (error) { setStatus(error.message, true); return; }
+    finishPendingEdit();
+    drag = { kind: 'cell', handle, dot: hit.object, before: snapshot(), target: [...handle.position], changed: false,
+      pointerId: event.pointerId, plane, pointerStart, sourceStart, displayStart, patch };
+    selectCell(handle.cellId); controls.enabled = false;
+    renderer.domElement.focus({ preventScroll: true }); renderer.domElement.setPointerCapture(event.pointerId);
+    viewport.style.cursor = 'grabbing';
+    $('corner-status').textContent = 'Move the centre · Release to move adjoining corners · Escape cancels.';
+    setStatus($('corner-status').textContent); updateExportAvailability(); updateEditAvailability();
+    event.stopImmediatePropagation(); event.preventDefault(); return;
+  }
   const seed = state.seeds.find(s => s.id === hit.object.userData.seedId);
   finishPendingEdit();
-  drag = { seed, dot: hit.object, before: snapshot(), changed: false };
+  drag = { seed, dot: hit.object, before: snapshot(), changed: false, pointerId: event.pointerId, modelRevision: state.modelRevision,
+    derivedBefore: { result: state.result, cells: state.cells, analysis: state.analysis, sourceSurface: state.sourceSurface, lastLayoutChange: state.lastLayoutChange } };
   selectCell(seed.id); controls.enabled = false;
   renderer.domElement.setPointerCapture(event.pointerId);
   viewport.style.cursor = 'grabbing';
@@ -929,6 +1003,17 @@ renderer.domElement.addEventListener('pointerdown', event => {
 let dragTimer;
 renderer.domElement.addEventListener('pointermove', event => {
   cast(event);
+  if (drag?.kind === 'cell') {
+    const hit = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
+    if (hit) {
+      const point = projectCornerDisplacement({ position: drag.handle.position }, hit.sub(drag.pointerStart), drag.patch);
+      drag.target = point.toArray(); drag.changed = point.distanceTo(drag.sourceStart) > 1e-4;
+      const displayed = drag.displayStart.clone().add(point.clone().sub(drag.sourceStart));
+      drag.dot.position.copy(displayed); drawCornerGuide(drag.displayStart.toArray(), displayed.toArray());
+      $('corner-status').textContent = `${mm(point.distanceTo(drag.sourceStart))} centre move · Release to check adjoining seams · Escape cancels.`;
+    }
+    event.stopImmediatePropagation(); event.preventDefault(); return;
+  }
   if (drag?.kind === 'corner') {
     let point;
     if (Math.hypot(event.clientX - drag.pointerScreen.x, event.clientY - drag.pointerScreen.y) < .5) {
@@ -983,7 +1068,7 @@ renderer.domElement.addEventListener('pointermove', event => {
     return;
   }
   const dot = !state.generating && (state.cornerMode && cornerGroup.visible && !cornerPending && raycaster.intersectObjects(cornerGroup.children)[0]
-    || state.edit && !state.multiSelect && !event.shiftKey && state.solved && seedGroup.visible && raycaster.intersectObjects(seedGroup.children)[0]);
+    || state.edit && !state.multiSelect && !event.shiftKey && canArrange() && seedGroup.visible && raycaster.intersectObjects(seedGroup.children)[0]);
   viewport.style.cursor = dot ? 'grab' : 'default';
   const hovered = raycaster.intersectObjects(cellGroup.children.filter(o => o.isMesh))[0]?.object.userData.cellId ?? null;
   if (hovered !== hoverId) {
@@ -992,15 +1077,21 @@ renderer.domElement.addEventListener('pointermove', event => {
   }
 }, true);
 function endDrag(event) {
-  if (drag?.kind === 'corner') {
-    if (event.type === 'pointercancel') { cancelCornerDrag(); setStatus('Corner move cancelled.'); return; }
+  if (directDrag()) {
+    if (event.type === 'pointercancel') { cancelCornerDrag(); setStatus('Move cancelled.'); return; }
     const moved = drag;
     drag = null; down = null; controls.enabled = true; viewport.style.cursor = 'default';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
-    if (moved.changed) commitCornerMove(moved);
-    else { clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildCorners(); updateInspector(); updateStats(); updateExportAvailability(); updateEditAvailability(); }
+    if (moved.changed) {
+      if (moved.kind === 'cell') commitDirectEdit({ type: 'move-cell', cellId: moved.handle.cellId, target: moved.target }, moved.before);
+      else commitCornerMove(moved);
+    } else { clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateStats(); updateExportAvailability(); updateEditAvailability(); }
     event.stopImmediatePropagation(); event.preventDefault(); return;
   } else if (drag) {
+    if (event.type === 'pointercancel') {
+      cancelCentreDrag(); setStatus('Centre move cancelled. The accepted layout is kept.');
+      event.stopImmediatePropagation(); event.preventDefault(); return;
+    }
     clearTimeout(dragTimer);
     if (drag.changed) { recordEdit(drag.before); requestLayout(); }
     drag = null; controls.enabled = true; viewport.style.cursor = 'default';
@@ -1167,8 +1258,8 @@ function updatePanelDiagnostics(waiting) {
   }
 }
 function updateExportAvailability() {
-  const waiting = state.busy || !!state.pending || !state.cells.length || !state.solved || !!cornerPending || drag?.kind === 'corner';
-  const waitingReason = !state.cells.length ? 'Load a model and calculate panels first.' : cornerPending || drag?.kind === 'corner'
+  const waiting = state.busy || !!state.pending || !state.cells.length || !state.solved || !!cornerPending || directDrag();
+  const waitingReason = !state.cells.length ? 'Load a model and calculate panels first.' : cornerPending || directDrag()
     ? 'Finish the corner edit and wait for validation.' : 'Wait for the current panel calculation.';
   const invalid = state.cells.some(c => !c.valid);
   const solids = state.result?.solids || [], solidInvalid = solids.some(s => !s.valid);
@@ -1203,8 +1294,9 @@ async function exportRhino(repair = false) {
   try {
     const {bytes}=await rhinoOperation({operation:repair ? 'repair-export' : 'export',cells:state.cells,solids:state.result.solids,sourceCells:repair ? state.result.surfaceCells : undefined,
       options:{name,up:$('model-up').value,carved:state.carve,rowWidth:Number($('export-row-width').value),spacing:Number($('export-spacing').value)}});
-    download(`${name}-${repair ? 'repair' : 'production'}.3dm`,bytes,'application/octet-stream');
-    setStatus(repair ? 'Rhino repair file exported · Every panel included with geometry type and diagnostic notes · Repair candidates before fabrication' : 'Rhino blocks exported · Assembly and flat parts share definitions · Nominal outlines; prepare toolpaths in CAM');
+    verifyRhino6Export(bytes);
+    download(`${name}-${repair ? 'repair' : 'production'}-rhino6.3dm`,bytes,'application/octet-stream');
+    setStatus(repair ? 'Rhino 6 repair file exported · File version verified · Every panel included with geometry type and diagnostic notes · Repair candidates before fabrication' : 'Rhino 6 blocks exported · File version verified · Assembly and flat parts share definitions · Nominal outlines; prepare toolpaths in CAM');
   } catch(error) {setStatus(`Could not export Rhino: ${error.message}`,true);}
   finally {exportingRhino=false;updateExportAvailability();}
 }
@@ -1245,7 +1337,7 @@ $('export-selected-obj').addEventListener('click', () => {
   } catch (error) { setStatus(error.message, true); }
 });
 $('save-study').addEventListener('click', () => {
-  if (!state.solved || state.busy || state.pending || cornerPending || drag?.kind === 'corner') return;
+  if (!state.solved || state.busy || state.pending || cornerPending || directDrag()) return;
   finishPendingEdit();
   try {
     const study = createStudy(state, { units: $('model-units').value, up: $('model-up').value,
@@ -1335,7 +1427,7 @@ async function loadExample(id) {
     if (opening !== studyOpenRevision) return;
     // Loading an example is an explicit document replacement, like opening a
     // mesh. Invalidate older asynchronous imports before installing this model.
-    cancelPendingEdit(); cancelCornerDrag(); cancelCornerPending();
+    cancelPendingEdit(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
     Object.assign(state, { variation: .3, randomSeed: 7, straightness: .7, thickness: 40, roundover: 2,
       carve: false, minimumThickness: 12, flipOutside: false, explode: 0, allowCellRemoval: true,
       edit: true, cornerMode: false, multiSelect: false, view: 'surface' });
@@ -1371,6 +1463,7 @@ function animate() { paintCornerSketch(); controls.update(); updateCornerPositio
 animate();
 // Read-only diagnostics for geometry and interaction verification.
 window.cellStudy = { get state() { return state; }, get camera() { return camera; }, get controls() { return controls; },
+  projectCellCentre(id) { const handle = seedGroup.children.find(child => child.userData.seedId === id); if (!handle) return null; const p = handle.position.clone().project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectCorner(id) { const corner = arrangementCorners().find(c => c.id === id); if (!corner) return null; const position = cornerDisplayPosition(corner, state.view, camera.position.toArray()); if (!position) return null; const p = vectors(position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectSeed(id) { const seed = state.seeds.find(s => s.id === id); if (!seed) return null; const p = vectors(seed.position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; } };
 loadExample(DEFAULT_EXAMPLE_ID);

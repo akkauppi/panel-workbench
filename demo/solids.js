@@ -82,6 +82,7 @@ function prepare(cell, index, flip = 1) {
     if ((area(ring.xy) > 0) !== (ri === 0)) { ring.ids.reverse(); ring.xy.reverse(); }
     ring.world = ring.ids.map(i => source[i]);
     ring.keys = ring.world.map(key);
+    ring.boundaryPlanes = ring.ids.map(i => cell.boundaryPlanes?.[i] || null);
   });
   checkRings(raw.map(r => r.xy));
   return { cell, index, plane, rings: raw, planarity };
@@ -143,8 +144,10 @@ function sidePlanes(panel, all, edges) {
     if (list.length > 2) throw new Error('More than two panels share an edge.');
     const neighborEntry = list.find(e => e.panel !== panel.index);
     const neighbor = neighborEntry && all[neighborEntry.panel];
-    let m = neighbor ? sub(normal, neighbor.plane.normal) : cross(edge, normal);
-    let worldConstant = neighbor ? dot(normal, origin) - dot(neighbor.plane.normal, neighbor.plane.origin) : dot(m, start);
+    const firstTrim = ring.boundaryPlanes[i], lastTrim = ring.boundaryPlanes[(i + 1) % ring.world.length];
+    const trim = !neighbor && firstTrim && lastTrim && Math.abs(dot(firstTrim.normal, lastTrim.normal) - 1) < 1e-8 && Math.abs(firstTrim.d - lastTrim.d) < 1e-5 ? firstTrim : null;
+    let m = neighbor ? sub(normal, neighbor.plane.normal) : trim ? [...trim.normal] : cross(edge, normal);
+    let worldConstant = neighbor ? dot(normal, origin) - dot(neighbor.plane.normal, neighbor.plane.origin) : trim ? trim.d : dot(m, start);
     let a = dot(m, u), b = dot(m, v), c = dot(m, normal);
     const tangentLength = Math.hypot(a, b);
     if (tangentLength < 1e-8) {
@@ -161,7 +164,7 @@ function sidePlanes(panel, all, edges) {
     const d = worldConstant - dot(m, origin);
     return { a, b, c, d, normal: m, constant: worldConstant, from: [...start], to: [...end],
       fromKey: ring.keys[i], toKey: ring.keys[(i + 1) % ring.keys.length], neighborIndex: neighbor?.index ?? null, neighborId: neighbor?.cell.id ?? null,
-      kind: neighbor ? 'shared-mitre-plane' : 'boundary-ruled' };
+      kind: neighbor ? 'shared-mitre-plane' : trim ? 'source-boundary-plane' : 'boundary-ruled' };
   }));
   return { cuts, minEdge };
 }
@@ -207,19 +210,22 @@ function offsetNetwork(prepared) {
     const k = ring.keys[i];
     if (!nodes.has(k)) nodes.set(k, { base: p, panels: new Set() });
     nodes.get(k).panels.add(panel.index);
+    if (ring.boundaryPlanes[i]) nodes.get(k).boundary = ring.boundaryPlanes[i];
   });
   for (const node of nodes.values()) {
     const matrix = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], zero = [0, 0, 0], slope = [0, 0, 0];
+    const base = node.boundary ? add(node.base, mul(node.boundary.normal, node.boundary.d - dot(node.boundary.normal, node.base))) : node.base;
     for (const index of node.panels) {
       const { normal, origin } = prepared[index].plane;
-      const residual = dot(normal, sub(origin, node.base));
+      const residual = dot(normal, sub(origin, base));
+      const tangent = node.boundary ? sub(normal, mul(node.boundary.normal, dot(normal, node.boundary.normal))) : normal;
       for (let i = 0; i < 3; i++) {
-        zero[i] += normal[i] * residual; slope[i] += normal[i];
-        for (let j = 0; j < 3; j++) matrix[i][j] += normal[i] * normal[j];
+        zero[i] += tangent[i] * residual; slope[i] += tangent[i];
+        for (let j = 0; j < 3; j++) matrix[i][j] += tangent[i] * tangent[j];
       }
     }
     const solve = symmetricSolver(matrix);
-    node.origin = add(node.base, solve(zero)); node.direction = solve(slope);
+    node.origin = add(base, solve(zero)); node.direction = solve(slope);
     node.cache = new Map();
     node.point = z => {
       if (node.cache.has(z)) return node.cache.get(z);
@@ -360,6 +366,12 @@ function topology(positions, triangles) {
   return null;
 }
 
+function boundaryViolation(panel, positions) {
+  let maximum = 0;
+  for (const plane of panel.cell.supportPlanes || []) for (const point of positions) maximum = Math.max(maximum, -(dot(plane.normal, point) - plane.d) * plane.support);
+  return maximum;
+}
+
 function buildAtRadius(panel, thickness, radius, requestedRadius, segments, roundoverSide) {
   const slices = levels(thickness, radius, segments, roundoverSide);
   const sliceRings = slices.map(level => { const rings = slice(panel, level.z, level.inset); checkRings(rings); return rings; });
@@ -404,6 +416,7 @@ function buildAtRadius(panel, thickness, radius, requestedRadius, segments, roun
       boundaryLoops: panel.rings.map((ring, ri) => ring.xy.map((_, i) => base + ringOffsets[ri] + i)),
       vertexIndices: localToGlobal, localPositions: cap.positions };
   }
+  if (boundaryViolation(panel, positions) > 1e-5) throw new Error('The stock extends past a planar source opening. Reshape the nearby cells or reduce thickness.');
   const problem = topology(positions, triangles);
   if (problem) throw new Error(problem);
   // Unrounded mitre corners are used to verify that neighboring stock pieces
@@ -442,20 +455,9 @@ function buildOne(panel, thickness, requestedRadius, segments, roundoverSide) {
   }
 }
 
-/**
- * Build cuttable flat stock solids with shared mitre planes and inward edge
- * roundovers. Positive/negative cap metadata is retained for a later real
- * carving operation; no curved-face shading is substituted for geometry.
- */
-export function buildPanelSolids(cells, options = {}) {
-  const thickness = Number(options.thickness ?? 40), radius = Number(options.radius ?? 2);
-  const segments = Math.max(2, Math.min(12, Math.round(options.segments || 4)));
-  const roundoverSide = ['positive', 'negative'].includes(options.roundoverSide) ? options.roundoverSide : 'both';
-  const invalid = (cell, message) => ({ id: cell.id, positions: [], triangles: [], triangleGroups: [], valid: false, issues: [message], thickness, requestedRadius: radius, actualRadius: 0, maxJointMismatch: 0 });
-  if (!Array.isArray(cells)) throw new Error('Expected panel cells.');
-  if (!(thickness > 0) || !(radius >= 0) || !Number.isFinite(thickness + radius)) return cells.map(cell => invalid(cell, 'Use a positive thickness and a nonnegative edge radius.'));
-  const results = new Array(cells.length), prepared = cells.map((cell, i) => {
-    try { return prepare(cell, i); } catch (error) { results[i] = invalid(cell, error.message); return null; }
+function prepareStockNetwork(cells, options, onInvalid) {
+  const prepared = cells.map((cell, i) => {
+    try { return prepare(cell, i); } catch (error) { onInvalid(i, error.message); return null; }
   });
   let edges = adjacency(prepared);
   const { signs, conflicts, components } = orient(prepared, edges);
@@ -471,11 +473,50 @@ export function buildPanelSolids(cells, options = {}) {
     if (flip === -1) for (const index of component) signs.set(index, -signs.get(index));
   }
   for (let i = 0; i < prepared.length; i++) if (prepared[i]) {
-    if (conflicts.has(i)) { results[i] = invalid(cells[i], 'The neighboring faces cannot be oriented consistently.'); prepared[i] = null; }
+    if (conflicts.has(i)) { onInvalid(i, 'The neighboring faces cannot be oriented consistently.'); prepared[i] = null; }
     else if (signs.get(i) === -1) prepared[i] = prepare(cells[i], i, -1);
   }
   edges = adjacency(prepared);
   offsetNetwork(prepared);
+  return { prepared, edges };
+}
+
+/** Fast unrounded stock checks for fitting. This checks both offset outlines
+ * using the same coupled nodes as solid construction, without triangulation
+ * or rounding. Passing this check does not replace final mesh validation. */
+export function inspectStockEnvelopes(cells, options = {}) {
+  const thickness = Number(options.thickness ?? 40), results = new Array(cells.length);
+  if (!(thickness > 0) || !Number.isFinite(thickness)) throw new Error('Use a positive finite stock thickness.');
+  const fail = (i, message) => { results[i] = { id: cells[i].id, valid: false, issues: [message], envelopes: [] }; };
+  const { prepared, edges } = prepareStockNetwork(cells, options, fail);
+  for (let i = 0; i < prepared.length; i++) if (prepared[i]) {
+    const envelopes = []; let violation = 0;
+    try {
+      Object.assign(prepared[i], sidePlanes(prepared[i], prepared, edges));
+      for (const z of [-thickness / 2, thickness / 2]) envelopes.push(slice(prepared[i], z, 0));
+      violation = boundaryViolation(prepared[i], envelopes.flatMap((rings, side) => rings.flat().map(xy => world(prepared[i], xy, (side ? 1 : -1) * thickness / 2))));
+      if (violation > 1e-5) throw new Error('The stock extends past a planar source opening. Reshape the nearby cells or reduce thickness.');
+      for (const rings of envelopes) checkRings(rings);
+      results[i] = { id: cells[i].id, valid: true, issues: [], envelopes, boundaryViolation: violation };
+    } catch (error) { results[i] = { id: cells[i].id, valid: false, issues: [error.message], envelopes, boundaryViolation: violation }; }
+  }
+  return results;
+}
+
+/**
+ * Build cuttable flat stock solids with shared mitre planes and inward edge
+ * roundovers. Positive/negative cap metadata is retained for a later real
+ * carving operation; no curved-face shading is substituted for geometry.
+ */
+export function buildPanelSolids(cells, options = {}) {
+  const thickness = Number(options.thickness ?? 40), radius = Number(options.radius ?? 2);
+  const segments = Math.max(2, Math.min(12, Math.round(options.segments || 4)));
+  const roundoverSide = ['positive', 'negative'].includes(options.roundoverSide) ? options.roundoverSide : 'both';
+  const invalid = (cell, message) => ({ id: cell.id, positions: [], triangles: [], triangleGroups: [], valid: false, issues: [message], thickness, requestedRadius: radius, actualRadius: 0, maxJointMismatch: 0 });
+  if (!Array.isArray(cells)) throw new Error('Expected panel cells.');
+  if (!(thickness > 0) || !(radius >= 0) || !Number.isFinite(thickness + radius)) return cells.map(cell => invalid(cell, 'Use a positive thickness and a nonnegative edge radius.'));
+  const results = new Array(cells.length);
+  const { prepared, edges } = prepareStockNetwork(cells, options, (i, message) => { results[i] = invalid(cells[i], message); });
   for (let i = 0; i < prepared.length; i++) if (prepared[i]) {
     try {
       Object.assign(prepared[i], sidePlanes(prepared[i], prepared, edges));

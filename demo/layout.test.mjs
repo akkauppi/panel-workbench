@@ -182,6 +182,17 @@ test('per-face coverage rejects a missing patch and equal-area overlapping repla
   assert.throws(() => captureLayout(model, repeated), /source layout/);
 });
 
+test('coverage distinguishes a valid skinny subdivision from a point on its opposite edge', () => {
+  const model={vertices:[[0,0,0],[1000,0,0],[0,1000,0]],triangles:[[0,1,2]]};
+  const source=rebuildSurfaceCells(model,[{id:0,seed:[300,300,0],weight:1,memberSeedIds:[0],
+    positions:[...model.vertices,[500,.00003,0]],triangles:[[0,1,3],[1,2,3],[2,0,3]]}]);
+  source.corners=[];
+  const layout=captureLayout(model,source);
+  assert.equal(layout.cells[0].triangles.length,3);
+  assert.ok(source.stats.coverageError<1e-12);
+  assert.deepEqual(restoreLayout(model,JSON.parse(JSON.stringify(layout))),source);
+});
+
 test('holed one-cell source retains opening loops and does not fill the missing mesh', () => {
   const model = grid({ hole: true });
   const source = generateCellLayout(model, [{ id: 0, position: [100, 100, 0] }], { size: 500 });
