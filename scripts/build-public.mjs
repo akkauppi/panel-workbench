@@ -13,6 +13,7 @@ const files = [
   'demo/io.js', 'demo/geometry.js', 'demo/fitted.js', 'demo/solids.js', 'demo/rendering.js',
   'demo/carving.js', 'demo/corner-drag.js', 'demo/study.js', 'demo/design.js',
   'demo/layout.js', 'demo/layout-edit.js', 'demo/pattern.js', 'demo/structured.js', 'demo/regularized.js', 'demo/quality.js', 'demo/worker.js',
+  'demo/laser-net.js', 'demo/laser-export.js', 'demo/laser-ui.js', 'demo/laser-worker.js',
   'demo/rhino-runtime.js', 'demo/rhino-export.js', 'demo/rhino-import.js', 'demo/rhino-worker.js', 'demo/rhino-format.js',
   'demo/vendor/rhino3dm/rhino3dm.module.js', 'demo/vendor/rhino3dm/rhino3dm.wasm',
   'demo/vendor/rhino3dm/LICENSE.txt', 'demo/vendor/rhino3dm/NOTICE.txt',

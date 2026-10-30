@@ -90,7 +90,7 @@ function readCorner(corner) {
 /** Parse and clone the document, rejecting references before geometric work. */
 export function readLayout(input) {
   object(input, 'document');
-  if (input.format !== 'panel-source-layout' || ![1, 2].includes(input.version)) fail('uses an unsupported document format');
+  if (input.format !== 'panel-source-layout' || ![1, 2, 3].includes(input.version)) fail('uses an unsupported document format');
   const authority = input.version === 1 ? 'recipe' : input.authority;
   if (!['recipe', 'graph'].includes(authority)) fail('has an invalid editing authority');
   object(input.source, 'source description'); object(input.nextIds, 'ID counters'); object(input.generation, 'generation metadata');
@@ -153,20 +153,41 @@ export function readLayout(input) {
   if (authority === 'graph' && corners.some(corner => !corner.vertexId || corner.id !== `vertex:${corner.vertexId}`)) fail('has a corner without its graph identity');
   const generation = { requestedCellCount: id(input.generation.requestedCellCount, 'requested cell count'),
     emptyCellCount: id(input.generation.emptyCellCount, 'empty cell count'), mergedCellCount: id(input.generation.mergedCellCount, 'merged cell count') };
-  if (generation.requestedCellCount > 500 || generation.requestedCellCount !== cells.length + generation.emptyCellCount + generation.mergedCellCount ||
+  if (generation.requestedCellCount > (authority==='graph'?MAX:500) || generation.requestedCellCount !== cells.length + generation.emptyCellCount + generation.mergedCellCount ||
     generation.mergedCellCount !== cells.reduce((sum, cell) => sum + cell.memberSeedIds.length - 1, 0)) fail('has inconsistent generation counts');
   const recipe = input.recipe === null ? null : layoutRecipe(input.recipe);
+  let splitOrigins;
+  if(input.version===3){
+    if(authority!=='graph')fail('has split ancestry without graph authority');
+    const entries=list(input.splitOrigins,'split ancestry',1),aliases=new Set(entries.map(entry=>entry?.id));
+    const original=new Set(recipe?recipe.seeds.map(seed=>seed.id):[...cells.flatMap(cell=>cell.memberSeedIds).filter(id=>!aliases.has(id)),...entries.flatMap(entry=>entry?.sourceSeedIds||[])]);
+    const known=new Map([...original].map(id=>[id,[id]]));
+    let highest=Math.max(-1,...original);
+    splitOrigins=entries.map(entry=>{
+      object(entry,'split ancestry');
+      const child=id(entry.id,'split part ID'),parentCellId=id(entry.parentCellId,'split parent ID'),sourceSeedIds=ids(entry.sourceSeedIds,'split source ancestry');
+      if(child<=highest||known.has(child)||!known.has(parentCellId)||sourceSeedIds.some(id=>!original.has(id))||known.get(parentCellId).some(id=>!sourceSeedIds.includes(id)))fail('has inconsistent split ancestry');
+      highest=child;known.set(child,sourceSeedIds);
+      return {id:child,parentCellId,sourceSeedIds};
+    });
+  }
   if (recipe) {
     if (authority === 'recipe' && generation.requestedCellCount !== recipe.seeds.length) fail('has a recipe inconsistent with its cell count');
     const groups = new Map(recipe.mergeGroups.map(group => [group.id, group.members]));
-    const known = new Set(recipe.seeds.map(seed => seed.id));
+    const known = new Set([...recipe.seeds.map(seed => seed.id),...(splitOrigins||[]).map(origin=>origin.id)]);
     const removed = new Set(recipe.mergeGroups.flatMap(group => group.members.filter(member => member !== group.id)));
     for (const cell of cells) {
       if (cell.memberSeedIds.some(member => !known.has(member))) fail('has a cell with unknown source ancestry');
       if (authority === 'recipe' && (!known.has(cell.id) || removed.has(cell.id) || cell.memberSeedIds.length !== (groups.get(cell.id) || [cell.id]).length || cell.memberSeedIds.some(member => !(groups.get(cell.id) || [cell.id]).includes(member)))) fail('has cell ownership that differs from its recipe');
     }
   }
-  return { format: 'panel-source-layout', version: input.version, ...(input.version === 2 ? { authority } : {}), source, nextIds, vertices, edges, cells, corners, generation, recipe };
+  return { format: 'panel-source-layout', version: input.version, ...(input.version >= 2 ? { authority } : {}), source, nextIds, vertices, edges, cells, corners, generation, recipe,
+    ...(splitOrigins?{splitOrigins}:{}) };
+}
+
+/** Includes retired generated and split IDs, not just currently visible cells. */
+export function nextLayoutCellId(layout) {
+  return Math.max(-1,...(layout?.recipe?.seeds||[]).map(seed=>seed.id),...(layout?.cells||[]).flatMap(cell=>[cell.id,...cell.memberSeedIds]),...(layout?.splitOrigins||[]).map(origin=>origin.id))+1;
 }
 
 // A small BVH locates source faces without testing every patch against every
@@ -259,7 +280,7 @@ function graphEdges(cells) {
 }
 
 /** Materialize a source partition once; future fitting reads this document. */
-export function captureLayout(model, surfaceResult, { previous = null, recipe = null, authority = 'recipe' } = {}) {
+export function captureLayout(model, surfaceResult, { previous = null, recipe = null, authority = 'recipe', splitOrigins = authority==='graph'?previous?.splitOrigins:undefined } = {}) {
   const sourceCells = surfaceResult.surfaceCells || surfaceResult.cells;
   if (!surfaceResult.surfaceCells && sourceCells.some(cell => cell.fittedShared)) fail('must be captured from source surface cells');
   const prepared=prepareSource(model), old=previous ? readLayout(previous) : null;
@@ -281,8 +302,9 @@ export function captureLayout(model, surfaceResult, { previous = null, recipe = 
   });
   const edges=[...graphEdges(cells).entries()].map(([key,edge])=>({id:previousEdges.get(key)??`e${nextIds.edge++}`,vertices:edge.vertices,cells:edge.cells}));
   const stats=surfaceResult.stats;
-  const layout=readLayout({format:'panel-source-layout',version:authority==='graph'?2:1,...(authority==='graph'?{authority}:{}),source:prepared.description,nextIds,vertices,edges,cells,
-    corners:surfaceResult.corners||[],generation:{requestedCellCount:stats.requestedCellCount??cells.length,emptyCellCount:stats.emptyCellCount??0,mergedCellCount:stats.mergedCellCount??0},recipe});
+  const layout=readLayout({format:'panel-source-layout',version:splitOrigins?.length?3:authority==='graph'?2:1,...(authority==='graph'?{authority}:{}),source:prepared.description,nextIds,vertices,edges,cells,
+    corners:surfaceResult.corners||[],generation:{requestedCellCount:stats.requestedCellCount??cells.length,emptyCellCount:stats.emptyCellCount??0,mergedCellCount:stats.mergedCellCount??0},recipe,
+    ...(splitOrigins?.length?{splitOrigins}:{})});
   validateGeometry(model,layout,prepared);
   return layout;
 }

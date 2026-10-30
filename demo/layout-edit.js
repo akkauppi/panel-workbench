@@ -1,5 +1,5 @@
 import { ShapeUtils, Triangle, Vector2, Vector3 } from './vendor/three.core.js';
-import { readLayout, restoreLayout, captureLayout } from './layout.js';
+import { readLayout, restoreLayout, captureLayout, nextLayoutCellId } from './layout.js';
 import { rebuildSurfaceCells, mergeSurfaceCells } from './geometry.js';
 
 const EPS = 1e-5;
@@ -16,6 +16,7 @@ const area = ring => ring.reduce((s,p,i) => {const q=ring[(i+1)%ring.length];ret
 const fail = message => { throw new Error(message); };
 const previewCache = new WeakMap();
 const cellHandleCache = new WeakMap();
+const splitPreviewCache = new WeakMap();
 
 function network(layout) {
   const points = new Map(layout.vertices.map(v => [v.id,v.position])), nodes = new Map(), directed = new Map();
@@ -374,7 +375,8 @@ function graphCorners(layout,model) {
 function finish(model, previous, builders, change, target=null, survivor=null, retiredVertex=null, expectedJunction=null, movedVertices=[]) {
   const generation={requestedCellCount:builders.reduce((sum,cell)=>sum+cell.memberSeedIds.length,0),emptyCellCount:0,mergedCellCount:builders.reduce((sum,cell)=>sum+cell.memberSeedIds.length-1,0)};
   const source=rebuildSurfaceCells(model,builders,generation);source.corners=[];
-  const layout=captureLayout(model,source,{previous,recipe:previous.recipe,authority:'graph'});
+  const splitOrigins=change.splitOrigin?[...(previous.splitOrigins||[]),change.splitOrigin]:previous.splitOrigins;
+  const layout=captureLayout(model,source,{previous,recipe:previous.recipe,authority:'graph',splitOrigins});
   const restorations=[...movedVertices];
   if(target&&survivor)restorations.push({target,survivor,expectedJunction});
   for(const move of restorations) {
@@ -467,9 +469,120 @@ function moveCell(model, input, layout, source, operation) {
   return result;
 }
 
+function splitContext(model,layout,cellId) {
+  let cached=splitPreviewCache.get(layout);
+  if(!cached||cached.model!==model){cached={model,cells:new Map()};splitPreviewCache.set(layout,cached);}
+  if(cached.cells.has(cellId))return cached.cells.get(cellId);
+  const cell=layout.cells.find(cell=>cell.id===cellId);
+  if(!cell)fail('The selected cell is no longer present in the authored layout.');
+  const local=chart(model,layout,new Set([cellId]),layoutCellHandle(layout,cellId).position);
+  const context={cell,local};cached.cells.set(cellId,context);return context;
+}
+
+function splitGeometry(model,layout,{cellId,start,end},newCellId) {
+  if([start,end].some(point=>!Array.isArray(point)||point.length!==3||point.some(x=>!Number.isFinite(x))))fail('Draw the divider using two finite points.');
+  const {cell,local}=splitContext(model,layout,cellId),a=local.project(start),b=local.project(end),span=distance(a,b);
+  if(span<EPS)fail('Draw a longer divider across the selected cell.');
+  const signed=cell.positions.map(point=>{const d=side(a,b,local.project(point))/span;return Math.abs(d)<1e-7?0:d;});
+  if(!signed.some(d=>d>0)||!signed.some(d=>d<0))fail('The divider must cross the selected cell and leave a part on both sides.');
+  const intersections=new Map(),canonical=new Map(cell.positions.map(point=>[key(point),point]));
+  function crossing(i,j){
+    if(signed[i]===0)return cell.positions[i];if(signed[j]===0)return cell.positions[j];
+    const edge=pairKey(i,j);if(intersections.has(edge))return intersections.get(edge);
+    const t=signed[i]/(signed[i]-signed[j]),p=cell.positions[i].map((x,k)=>x+t*(cell.positions[j][k]-x));
+    let point=distance(p,cell.positions[i])<EPS?cell.positions[i]:distance(p,cell.positions[j])<EPS?cell.positions[j]:p;
+    point=canonical.get(key(point))||point;canonical.set(key(point),point);intersections.set(edge,point);return point;
+  }
+  const parts=[{id:cell.id,seed:cell.seed,weight:cell.weight,memberSeedIds:cell.memberSeedIds},
+    {id:newCellId,seed:cell.seed,weight:cell.weight,memberSeedIds:[newCellId]}].map(part=>({...part,positions:[],triangles:[],map:new Map()}));
+  const segments=[],segmentKeys=new Set();
+  for(const face of cell.triangles){
+    const ids=face.vertices;
+    for(let half=0;half<2;half++){
+      const sign=half===0?1:-1,polygon=[];
+      for(let i=0;i<3;i++){
+        const p=ids[i],q=ids[(i+1)%3],inside=signed[p]*sign>=0,nextInside=signed[q]*sign>=0;
+        if(inside)polygon.push(cell.positions[p]);
+        if(inside!==nextInside)polygon.push(crossing(p,q));
+      }
+      const part=parts[half],refs=polygon.map(point=>{const k=key(point);if(!part.map.has(k)){part.map.set(k,part.positions.length);part.positions.push([...point]);}return part.map.get(k);})
+        .filter((id,i,refs)=>!i||id!==refs[i-1]);
+      if(refs[0]===refs.at(-1))refs.pop();
+      for(let i=1;i<refs.length-1;i++){
+        const tri=[refs[0],refs[i],refs[i+1]],p=tri.map(id=>part.positions[id]);
+        if(length(cross(sub(p[1],p[0]),sub(p[2],p[0])))>2e-9)part.triangles.push(tri);
+      }
+    }
+    const cut=[];
+    for(let i=0;i<3;i++){
+      const p=ids[i],q=ids[(i+1)%3];
+      if(signed[p]===0)cut.push(cell.positions[p]);
+      if(signed[p]*signed[q]<0)cut.push(crossing(p,q));
+    }
+    const unique=[...new Map(cut.map(point=>[key(point),point])).values()];
+    if(unique.length===2&&distance(...unique)>EPS){const k=pairKey(...unique.map(key));if(!segmentKeys.has(k)){segmentKeys.add(k);segments.push(...unique);}}
+  }
+  if(parts.some(part=>!part.triangles.length))fail('The divider leaves only a negligible sliver. Draw it farther through the cell.');
+  const children=rebuildSurfaceCells(model,parts).cells,total=children.reduce((sum,child)=>sum+child.area,0);
+  if(children.some(child=>child.area<Math.max(1e-6,total*1e-8)))fail('The divider leaves only a negligible sliver. Draw it farther through the cell.');
+  if(children.some(child=>child.sourceComponentCount!==1))fail('This divider makes disconnected pieces. Draw it where each side stays in one connected part.');
+  const boundaryCuts=[];
+  for(const loop of cell.loops)for(let i=0;i<loop.length;i++){
+    const p=loop[i],q=loop[(i+1)%loop.length];
+    if(signed[p]*signed[q]<0){const point=crossing(p,q);if(distance(point,cell.positions[p])>EPS&&distance(point,cell.positions[q])>EPS)boundaryCuts.push({vertices:[cell.vertexIds[p],cell.vertexIds[q]],point});}
+  }
+  return {parts,segments:segments.map(point=>[...point]),boundaryCuts,areas:children.map(child=>child.area)};
+}
+
+/** Preview is clipped to the selected cell and follows its actual source faces. */
+export function previewCellSplit(model,layout,operation) {
+  try{const result=splitGeometry(model,layout,operation,nextLayoutCellId(layout));return {segments:result.segments,areas:result.areas,issue:null};}
+  catch(error){return {segments:[],issue:error.message};}
+}
+
+function splitCell(model,layout,operation) {
+  if(layout.cells.length>=500)fail('This study already has 500 cells. Merge cells before adding another.');
+  const minimum=nextLayoutCellId(layout),newCellId=operation.nextCellId??minimum;
+  if(!Number.isSafeInteger(newCellId)||newCellId<minimum||newCellId>=Number.MAX_SAFE_INTEGER)fail('The new panel ID is stale or invalid. Draw the divider again.');
+  const divided=splitGeometry(model,layout,operation,newCellId),selected=layout.cells.find(cell=>cell.id===operation.cellId);
+  const cutsByCell=new Map(),affected=new Set([operation.cellId,newCellId]);
+  const edges=new Map(layout.edges.map(edge=>[pairKey(...edge.vertices),edge]));
+  for(const edge of layout.edges)if(edge.cells.includes(operation.cellId))edge.cells.forEach(id=>affected.add(id));
+  for(const cut of divided.boundaryCuts)for(const owner of edges.get(pairKey(...cut.vertices))?.cells||[]){
+    if(owner===operation.cellId)continue;
+    if(!cutsByCell.has(owner))cutsByCell.set(owner,[]);cutsByCell.get(owner).push(cut);affected.add(owner);
+  }
+  const builders=layout.cells.filter(cell=>cell.id!==operation.cellId).map(cell=>{
+    const builder={id:cell.id,seed:cell.seed,weight:cell.weight,memberSeedIds:cell.memberSeedIds,positions:cell.positions,triangles:cell.triangles.map(face=>face.vertices),loops:cell.loops};
+    const cuts=cutsByCell.get(cell.id);if(!cuts)return builder;
+    builder.positions=cell.positions.map(point=>[...point]);builder.triangles=[];delete builder.loops;
+    const map=new Map(builder.positions.map((point,i)=>[key(point),i]));
+    const vertex=point=>{const k=key(point);if(!map.has(k)){map.set(k,builder.positions.length);builder.positions.push([...point]);}return map.get(k);};
+    for(const face of cell.triangles){
+      const ring=[];let changed=false;
+      for(let i=0;i<3;i++){
+        const p=face.vertices[i],q=face.vertices[(i+1)%3],edge=pairKey(cell.vertexIds[p],cell.vertexIds[q]);
+        const samples=cuts.filter(cut=>pairKey(...cut.vertices)===edge).sort((x,y)=>distance(x.point,cell.positions[p])-distance(y.point,cell.positions[p]));
+        ring.push(p,...samples.map(cut=>vertex(cut.point)));changed ||= samples.length>0;
+      }
+      if(!changed){builder.triangles.push(face.vertices);continue;}
+      const center=vertex([0,1,2].map(k=>face.vertices.reduce((sum,id)=>sum+cell.positions[id][k],0)/3));
+      for(let i=0;i<ring.length;i++)builder.triangles.push([center,ring[i],ring[(i+1)%ring.length]]);
+    }
+    return builder;
+  });
+  builders.push(...divided.parts);builders.sort((a,b)=>a.id-b.id);
+  const origins=new Map((layout.splitOrigins||[]).map(origin=>[origin.id,origin.sourceSeedIds]));
+  const sourceSeedIds=[...new Set(selected.memberSeedIds.flatMap(id=>origins.get(id)||[id]))].sort((a,b)=>a-b);
+  const splitOrigin={id:newCellId,parentCellId:selected.id,sourceSeedIds};
+  const result=finish(model,layout,builders,{removedCellIds:[],collapsedEdgeIds:[],newCellId,survivingCellId:selected.id,affectedCellIds:[...affected].sort((a,b)=>a-b),splitOrigin});
+  return result;
+}
+
 /** Atomic direct graph transaction: no seed-field regeneration or hidden radius. */
 export function transactLayout(model, input, operation) {
   const layout=readLayout(input),source=restoreLayout(model,layout);
+  if(operation?.type==='split-cell')return splitCell(model,layout,operation);
   if(operation?.type==='move-cell')return moveCell(model,input,layout,source,operation);
   if(operation?.type==='merge-cells') {
     const selected=operation.cellIds;

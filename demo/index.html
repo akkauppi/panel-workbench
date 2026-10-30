@@ -88,6 +88,7 @@
         </div>
         <div class="ribbon-group">
           <div class="ribbon-group-content">
+            <button id="split-cell" class="ribbon-command ribbon-large" type="button" aria-pressed="false" disabled=""><svg><use href="#i-corner"></use></svg>Divide cell</button>
             <button id="merge-cells" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-merge"></use></svg>Merge selected</button>
             <button id="clear-selection" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-clear"></use></svg>Clear</button>
           </div>
@@ -268,6 +269,7 @@
             <button id="export-obj" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>3D panels <span class="file-type">OBJ</span></button>
             <button id="export-stl" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Solid panels <span class="file-type">STL</span></button>
             <button id="export-dxf" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Flat outlines <span class="file-type">DXF</span></button>
+            <button id="open-laser" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-sheet"></use></svg>Laser scale model <span class="file-type">SVG</span></button>
           </div>
           <div class="ribbon-group-caption">Entire layout <button class="info-button" type="button" popovertarget="export-info" aria-label="About export object types"><svg><use href="#i-info"></use></svg></button></div>
         </div>
@@ -308,6 +310,7 @@
       <strong id="active-tool-name" class="active-tool-name">Move cells</strong>
       <div class="active-tool-options">
         <p id="move-cells-help" class="control-hint">Drag a centre to reshape neighbouring cells. Merged cell centres stay fixed.</p>
+        <p class="control-hint split-help">Drag within the selected cell to set a divider. It extends to the edges. Release to divide; Escape cancels.</p>
         <p class="control-hint multi-select-help">Click cells to add or remove them from the selection. Shift-click also adds cells.</p>
         <div class="corner-controls">
           <label class="checkbox-row"><input id="allow-cell-removal" type="checkbox" checked="" aria-describedby="cell-removal-help"><span>Allow cell removal</span></label>
@@ -343,6 +346,35 @@
       <p><strong>Production preparation:</strong> rows provide spacing, not sheet nesting. Outlines are nominal panel boundaries, not bevel envelopes or compensated cutter paths. Check stock, orientation and tool access, then create toolpaths in CAM.</p>
       <p><strong>OBJ:</strong> meshes for the current view. <strong>STL:</strong> triangulated solids; import as mm. <strong>DXF:</strong> loose flat outline polylines and panel labels, without linked blocks. <strong>Study JSON:</strong> the editable app design.</p>
     </div>
+    <dialog id="laser-dialog" class="laser-dialog" aria-labelledby="laser-title">
+      <header><h2 id="laser-title">Laser scale model</h2><button id="close-laser" type="button" aria-label="Close laser scale model">×</button></header>
+      <p>Unfold fitted panels into connected pieces for a <strong>400 × 400 mm</strong> bed. Matching seam labels show where separate pieces join.</p>
+      <div class="laser-controls">
+        <label>Scale 1 : <input id="laser-scale" type="number" min="1" max="10000" step="1" value="10"></label>
+        <label>Sheet margin (mm)<input id="laser-margin" type="number" min="5" max="100" step="1" value="10"></label>
+        <label>Fold groove width (mm)<input id="laser-groove" type="number" min="0" max="10" step="0.1" value="0"></label>
+        <label>Panels<select id="laser-scope"><option value="all">Whole model</option><option value="resolved">Resolved outlines only (incomplete)</option></select></label>
+      </div>
+      <p class="laser-note">0 mm makes a score centreline (Line mode); a wider groove makes a closed engraving band (Fill mode). Groove width is measured on the small model.</p>
+      <div class="laser-actions"><button id="laser-build" type="button">Prepare sheets</button><button id="laser-coupon" type="button">Hinge test coupon</button><button class="info-button" type="button" popovertarget="laser-info" aria-label="About laser objects and layers"><svg><use href="#i-info"></use></svg></button></div>
+      <p id="laser-status" role="status" aria-live="polite">Prepare the sheets to preview them, or start with a plywood hinge coupon.</p>
+      <div class="laser-output" id="laser-output" hidden>
+        <div class="laser-controls"><label>Sheet<select id="laser-sheet"></select></label><label>Face<select id="laser-side"><option value="front">Front — cut and engrave</option><option value="back">Back — mirrored engraving</option></select></label><button id="laser-download" type="button" disabled>Download this SVG</button></div>
+        <img id="laser-preview" alt="Laser sheet preview, with cut outlines and engraving guides" width="400" height="400">
+        <ul id="laser-legend" class="laser-legend"></ul>
+        <p id="laser-sheet-note" class="laser-note"></p>
+      </div>
+      <p class="laser-note"><strong>Thin plywood test:</strong> scoring alone may not make a reliable hinge. Test the coupon on your material and choose power, speed, passes and remaining thickness in LightBurn. These files do not include machine settings, kerf compensation, glue tabs or bend allowance.</p>
+      <div id="laser-info" class="format-info" popover role="note" aria-labelledby="laser-info-title">
+        <button class="info-close" type="button" popovertarget="laser-info" popovertargetaction="hide" aria-label="Close laser information">×</button>
+        <h2 id="laser-info-title">What is in the laser SVG?</h2>
+        <p><strong>2D vectors in millimetres:</strong> scaled fitted panel outlines, openings, fold guides, panel IDs and matching join labels. The full-thickness carved solids are not used. A valid outline can be used even if its full-size stock solid is unresolved.</p>
+        <p><strong>LightBurn layers:</strong> black cuts, blue fold grooves, red labels, gray alignment references. The coupon adds cyan filled groove bands. Colours separate operations; set their modes, order, power and speed yourself. For two-sided work, engrave the back first, flip, then engrave the front and cut last.</p>
+        <p><strong>Front and back:</strong> fold direction chooses the groove face. Back artwork is mirrored left-to-right about the 400 mm sheet centre. Use a registered flip jig and the same sheet origin. The four gray reference circles keep a common artwork size; disable their laser output. Back files contain no cutting paths. Registration requires a physical test.</p>
+        <p><strong>Assembly:</strong> overlap, curvature and sheet size can require separate nets. Match identical seam labels and tape or glue those edges together. Flat geometry does not predict whether plywood will bend without cracking or how material thickness changes the fit.</p>
+        <p><strong>Incomplete export:</strong> Whole model requires every fitted outline to be valid. Resolved outlines only deliberately omits failed panels and lists them in the preview.</p>
+      </div>
+    </dialog>
     <input id="mesh-file" type="file" accept=".obj,.3dm,text/plain,application/octet-stream" hidden="">
     <input id="study-file" type="file" accept=".json,application/json" hidden="">
     <div class="workbench">

@@ -1,4 +1,4 @@
-import { readLayout, layoutRecipe } from './layout.js';
+import { readLayout, layoutRecipe, nextLayoutCellId } from './layout.js';
 import { readPattern } from './pattern.js';
 
 // The authored source layout is persistent. Fitted panels and stock solids are
@@ -181,6 +181,11 @@ export function readStudy(input) {
     JSON.stringify(result.directBase.source) !== JSON.stringify(result.layout.source))) {
     throw new Error('The saved direct-edit baseline does not match this design.');
   }
+  if(study.nextCellId!==undefined){
+    const minimum=Math.max(nextLayoutCellId(result.layout),nextLayoutCellId(result.directBase),...seeds.map(seed=>seed.id+1));
+    if(!isId(study.nextCellId)||study.nextCellId<minimum)throw new Error('The study contains a stale or invalid next panel ID.');
+    result.nextCellId=study.nextCellId;
+  }
   if (study.camera !== undefined || study.target !== undefined) {
     if (!isPoint(study.camera) || !isPoint(study.target)) throw new Error('The study contains an invalid camera position.');
     result.camera = [...study.camera]; result.target = [...study.target];
@@ -192,6 +197,7 @@ export function createStudy(state, { units, up, camera, target }) {
   if (!state.layout) throw new Error('Wait for the source layout to finish before saving.');
   return readStudy({
     ...captureDesign(state), format: 'sauna-cell-study', version: 5, allowCellRemoval: state.allowCellRemoval ?? true,
+    nextCellId: state.nextCellId,
     name: state.name, rawModel: state.rawModel, view: state.view,
     units, up, camera, target,
   });

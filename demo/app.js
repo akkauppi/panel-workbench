@@ -5,7 +5,9 @@ import { analyzeModel, createMergeGroups } from './geometry.js';
 import { exportSolidsOBJ, exportSolidsSTL } from './solids.js';
 import { captureDesign, createStudy, readStudy, immutableLayout } from './study.js';
 import { cornerDisplayPosition, cornerProjectionPatch, projectCornerDisplacement } from './corner-drag.js';
-import { previewCornerMove, createCornerSketch, layoutCellHandle } from './layout-edit.js';
+import { previewCornerMove, createCornerSketch, layoutCellHandle, previewCellSplit } from './layout-edit.js';
+import { initLaserUI } from './laser-ui.js';
+import { nextLayoutCellId } from './layout.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
@@ -18,13 +20,14 @@ const $ = id => document.getElementById(id);
 const state = {
   rawModel: null, model: null, analysis: null, seeds: [], cells: [], result: null, layout: null, sourceSurface: null,
   name: 'Synthetic example', view: 'surface', color: 'timber', selected: null, selectedIds: [], multiSelect: false, mergeGroups: [],
-  cornerEdits: [], cornerMode: false, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
+  cornerEdits: [], cornerMode: false, splitMode: false, nextCellId: 0, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
   size: Number($('size').value), variation: Number($('variation').value) / 100,
   pattern: readPattern(), generating: false,
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
   straightness: 0.7, thickness: 40, roundover: 2, carve: false, minimumThickness: 12, flipOutside: false,
   revision: 0, requested: 0, busy: false, pending: null, modelRevision: 0, solved: false
 };
+const laserUI = initLaserUI({ download });
 const viewport = $('viewport');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#e5e9ee');
@@ -89,7 +92,7 @@ function updateWorkspaceChrome() {
   $('document-name').textContent = state.name;
   document.title = `${state.name} — Panel Workbench`;
   $('view-name').textContent = viewNames[state.view];
-  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
+  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
   $('ribbon-selection-context').textContent = state.selectedIds.length > 1 ? `${state.selectedIds.length} cells selected`
     : state.selected != null ? `Cell ${panelId(state.selected)}` : 'No selection';
   for (const button of document.querySelectorAll('[data-browser-view]')) {
@@ -181,6 +184,7 @@ worker.onmessage = ({ data }) => {
     else {
       if (!drag) state.seeds = data.seeds;
       state.layout = immutableLayout(data.layout);
+      state.nextCellId = Math.max(state.nextCellId, nextLayoutCellId(state.layout));
       state.sourceSurface = null;
       state.result = data.result;
       state.cells = data.result.cells;
@@ -196,7 +200,7 @@ worker.onmessage = ({ data }) => {
         if (!drag) buildSeeds();
         buildCorners();
         updateInspector(); updateStats();
-        setStatus(`${state.cells.length} cells · ${state.cornerMode ? 'Drag a shared corner · Release to apply · Escape cancels' : state.multiSelect ? 'Click cells to add or remove them from the selection' : state.edit ? 'Drag a dot to reshape · Shift-click cells to merge' : 'Click a panel to inspect · Drag the model to orbit'}`);
+        setStatus(`${state.cells.length} cells · ${state.splitMode ? 'Drag inside the selected cell to divide it · Escape cancels' : state.cornerMode ? 'Drag a shared corner · Release to apply · Escape cancels' : state.multiSelect ? 'Click cells to add or remove them from the selection' : state.edit ? 'Drag a dot to reshape · Shift-click cells to merge' : 'Click a panel to inspect · Drag the model to orbit'}`);
       }
     }
   }
@@ -255,7 +259,7 @@ function canArrange() {
   return !state.generating && !cornerPending && (sourceReady || state.solved && !state.busy && !state.pending);
 }
 function graphCentreMode() { return !!state.directBase || !!state.cornerEdits.length || !!state.mergeGroups.length || state.pattern.type !== 'organic'; }
-function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell'; }
+function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell' || drag?.kind === 'split'; }
 function buildCells() {
   disposeGroup(cellGroup);
   for (const cell of arrangementCells()) {
@@ -468,7 +472,7 @@ function buildReference() {
   document.querySelector('.compass-mark').firstChild.textContent = zUp ? 'Z' : 'Y';
   updateReference();
 }
-function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, preserveSettings = false, initialSize = null, pattern } = {}) {
+function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern } = {}) {
   const factor = { mm: 1, cm: 10, m: 1000 }[$('model-units').value];
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
   if (model.vertices.some(p => p.length !== 3) || model.triangles.some(t => t.length !== 3 || t.some(i => !Number.isInteger(i) || i < 0 || i >= model.vertices.length))) throw new Error('The model contains invalid face indices or coordinates.');
@@ -484,6 +488,8 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   state.cornerEdits = structuredClone(cornerEdits); state.selectedCorner = null;
   state.seeds = seeds || [];
   state.layout = immutableLayout(layout);
+  state.nextCellId = Math.max(nextCellId, nextLayoutCellId(layout), nextLayoutCellId(directBase), ...state.seeds.map(seed => seed.id + 1));
+  state.splitMode = false; $('split-cell').setAttribute('aria-pressed', 'false');
   state.directBase = immutableLayout(directBase); state.lastLayoutChange = null;
   if ((directBase || cornerEdits.length) && state.edit) {
     state.edit = false; state.cornerMode = true; state.multiSelect = false;
@@ -701,6 +707,8 @@ function updateEditAvailability() {
   $('regenerate').disabled = !state.ready || waiting;
   $('reset-layout').disabled = !state.ready || waiting;
   $('clear-selection').disabled = !state.selectedIds.length;
+  $('split-cell').disabled = !state.ready || !canArrange() || !!drag || !state.splitMode && state.selectedIds.length !== 1;
+  $('split-cell').title = state.selectedIds.length !== 1 ? 'Select one cell to divide.' : 'Drag a divider across this cell in the Cells view.';
   $('corner-toggle').disabled = !state.ready || !canArrange() || !!drag;
   $('reset-corners').disabled = (!state.cornerEdits.length && !state.directBase) || waiting;
   $('reset-corners').textContent = state.directBase ? 'Reset direct edits' : 'Reset corners';
@@ -712,7 +720,7 @@ function updateEditAvailability() {
     : 'Drag a centre on the surface to stretch the surrounding cells. After corner edits, centres move the authored corners together.';
   $('merge-cells').disabled = true;
   if (state.selectedIds.length < 2) {
-    $('merge-status').textContent = state.selectedIds.length ? '1 cell selected. Add a neighbouring cell to merge.' : 'Select adjoining cells to remove their shared seam.';
+    $('merge-status').textContent = state.selectedIds.length ? '1 cell selected. Divide it, or add a neighbour to merge.' : 'Select adjoining cells to remove their shared seam.';
   } else if (waiting) {
     $('merge-status').textContent = 'Updating the selected cells…';
   } else {
@@ -736,7 +744,8 @@ function validateMergeSelection() {
 $('multi-select').addEventListener('click', () => {
   cancelCornerPending();
   state.multiSelect = !state.multiSelect;
-  if (state.multiSelect) { state.edit = false; state.cornerMode = false; }
+  if (state.multiSelect) { state.edit = false; state.cornerMode = false; state.splitMode = false; }
+  $('split-cell').setAttribute('aria-pressed', String(state.splitMode));
   $('multi-select').setAttribute('aria-pressed', String(state.multiSelect));
   $('edit-toggle').setAttribute('aria-pressed', String(state.edit));
   $('corner-toggle').setAttribute('aria-pressed', String(state.cornerMode));
@@ -777,6 +786,7 @@ function updateViewportHint() {
   updateWorkspaceChrome();
   junctionGroup.visible = !state.cornerMode;
   $('viewport-hint').textContent = state.view === 'reference' ? 'Drag to orbit · Scroll to zoom'
+    : state.splitMode ? 'Drag within the selected cell to draw a divider · Release to apply · Esc cancels'
     : state.cornerMode ? 'Drag a corner · Alt suppresses snapping · Release to apply · Esc cancels'
     : state.multiSelect ? 'Click cells to add or remove them · Drag to orbit · Scroll to zoom'
     : state.edit ? 'Drag a handle to edit · Drag the model to orbit · Scroll to zoom'
@@ -828,9 +838,9 @@ function resetInteraction() {
   cancelGeneration(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
   // Escape ends the editing tool, but retains an entered slider value.
   finishPendingEdit();
-  state.edit = false; state.cornerMode = false; state.multiSelect = false;
+  state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false;
   state.selectedCorner = null; down = null; hoverId = null;
-  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select']) $(id).setAttribute('aria-pressed', 'false');
+  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell']) $(id).setAttribute('aria-pressed', 'false');
   controls.enabled = true; viewport.style.cursor = 'default';
   clearCornerSketch(); disposeGroup(cornerGuide);
   for (const object of cellGroup.children) if (object.isMesh) object.material.emissive.set('#000000');
@@ -854,9 +864,9 @@ async function commitCornerMove(moved) {
 }
 async function commitDirectEdit(transaction, before) {
   const sequence = ++cornerSequence, modelRevision = state.modelRevision;
-  const merging = transaction.type === 'merge-cells', movingCell = transaction.type === 'move-cell';
-  cornerPending = { sequence, before, kind: merging ? 'merge' : movingCell ? 'cell' : 'corner' };
-  $('corner-status').textContent = merging ? 'Checking the cell merge…' : movingCell ? 'Checking the centre move…' : 'Checking the corner move…';
+  const merging = transaction.type === 'merge-cells', movingCell = transaction.type === 'move-cell', splitting = transaction.type === 'split-cell';
+  cornerPending = { sequence, before, kind: splitting ? 'split' : merging ? 'merge' : movingCell ? 'cell' : 'corner' };
+  $('corner-status').textContent = splitting ? 'Checking the divider…' : merging ? 'Checking the cell merge…' : movingCell ? 'Checking the centre move…' : 'Checking the corner move…';
   setStatus($('corner-status').textContent); updateEditAvailability(); updateExportAvailability();
   try {
     const { layout, change, surface } = await validateDesignGeometry({ model: state.model, layout: state.layout, transaction });
@@ -871,18 +881,19 @@ async function commitDirectEdit(transaction, before) {
     const survivors = new Set(layout.cells.map(cell => cell.id));
     state.selectedIds = state.selectedIds.filter(id => survivors.has(id));
     if (merging) state.selectedIds = [change?.survivingCellId ?? Math.min(...transaction.cellIds)].filter(id => survivors.has(id));
+    if (splitting) state.selectedIds = [change.newCellId];
     state.selected = state.selectedIds.at(-1) ?? null;
     state.selectedCorner = change?.survivingCornerId ?? null;
     recordEdit(before);
     const removed = change?.removedCellIds ?? [];
-    $('corner-status').textContent = merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
+    $('corner-status').textContent = splitting ? `Cell divided. ${panelId(change.newCellId)} added; Undo restores the original.` : merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
       ? `Corner applied · Removed ${removed.map(panelId).join(', ')}. Undo restores them.`
       : change?.collapsedEdgeIds?.length ? 'Corners joined. Panels refit the edited layout.' : 'Corner applied. Panels refit the edited layout.';
     clearCornerSketch();
     requestLayout({ preserveSource: true });
   } catch (error) {
     if (sequence !== cornerSequence) return;
-    $('corner-status').textContent = `${merging ? 'Merge' : 'Move'} not applied: ${error.message}`;
+    $('corner-status').textContent = `${splitting ? 'Divider' : merging ? 'Merge' : 'Move'} not applied: ${error.message}`;
     setStatus($('corner-status').textContent, true);
   } finally {
     if (sequence === cornerSequence) {
@@ -896,7 +907,8 @@ $('corner-toggle').addEventListener('click', () => {
   finishPendingEdit(); cancelCornerPending();
   state.cornerMode = !state.cornerMode || state.view === 'reference' || state.explode !== 0;
   if (state.cornerMode) {
-    state.edit = false; state.multiSelect = false; state.explode = 0;
+    state.edit = false; state.multiSelect = false; state.splitMode = false; state.explode = 0;
+    $('split-cell').setAttribute('aria-pressed', 'false');
     $('explode').value = 0; updateControlLabels();
     if (state.view === 'reference') showView('surface');
     else buildCells();
@@ -906,6 +918,28 @@ $('corner-toggle').addEventListener('click', () => {
   $('multi-select').setAttribute('aria-pressed', String(state.multiSelect));
   buildSeeds(); buildCorners(); updateViewportHint(); updateStats();
 });
+$('split-cell').addEventListener('click', () => {
+  if ($('split-cell').disabled) return;
+  finishPendingEdit(); cancelCornerPending();
+  state.splitMode = !state.splitMode;
+  if (state.splitMode) {
+    state.edit = false; state.cornerMode = false; state.multiSelect = false; state.explode = 0;
+    $('explode').value = 0; updateControlLabels(); showView('surface');
+  }
+  for (const [id, active] of [['split-cell',state.splitMode],['edit-toggle',state.edit],['corner-toggle',state.cornerMode],['multi-select',state.multiSelect]]) $(id).setAttribute('aria-pressed', String(active));
+  buildSeeds(); buildCorners(); updateViewportHint(); updateStats();
+  setStatus(state.splitMode ? 'Drag a line inside the selected cell. It extends to the cell edges; release to divide.' : 'Divider tool off.');
+});
+function paintSplitPreview() {
+  if (drag?.kind !== 'split' || !drag.previewDirty) return;
+  drag.previewDirty = false;
+  const preview = previewCellSplit(state.model, state.layout, { cellId: drag.cellId, start: drag.start, end: drag.end });
+  disposeGroup(cornerGuide);
+  const line = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(preview.segments.map(vectors)),
+    new THREE.LineBasicMaterial({ color: preview.issue ? '#b44732' : '#1957b4', depthTest: false }));
+  line.renderOrder = 3; cornerGuide.add(line);
+  setStatus(preview.issue ? `Divider: ${preview.issue}` : 'Divider preview · Release to create two cells · Escape cancels.', !!preview.issue);
+}
 $('reset-corners').addEventListener('click', () => {
   finishPendingEdit(); cancelCornerPending();
   if (state.directBase) {
@@ -934,6 +968,19 @@ renderer.domElement.addEventListener('pointerdown', event => {
   if (event.button !== 0) return;
   cast(event); down = { x: event.clientX, y: event.clientY };
   if (state.generating) return;
+  if (state.splitMode && state.view === 'surface' && canArrange()) {
+    const hit = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
+    if (hit && hit.object.userData.cellId === state.selected && state.selectedIds.length === 1) {
+      finishPendingEdit();
+      drag = { kind: 'split', cellId: state.selected, start: hit.point.toArray(), end: hit.point.toArray(),
+        before: snapshot(), changed: false, pointerId: event.pointerId,
+        plane: new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), hit.point) };
+      controls.enabled = false; renderer.domElement.focus({ preventScroll: true });
+      renderer.domElement.setPointerCapture(event.pointerId); viewport.style.cursor = 'crosshair';
+      updateExportAvailability(); updateEditAvailability();
+      event.stopImmediatePropagation(); event.preventDefault(); return;
+    }
+  }
   if (state.cornerMode && cornerGroup.visible && canArrange()) {
     const hit = raycaster.intersectObjects(cornerGroup.children)[0];
     const surfaceHit = state.view === 'surface' ? sourceMesh && raycaster.intersectObject(sourceMesh)[0]
@@ -1003,6 +1050,14 @@ renderer.domElement.addEventListener('pointerdown', event => {
 let dragTimer;
 renderer.domElement.addEventListener('pointermove', event => {
   cast(event);
+  if (drag?.kind === 'split') {
+    const hit = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
+    const point = hit?.object.userData.cellId === drag.cellId ? hit.point : raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
+    if (point) {
+      drag.end = point.toArray(); drag.changed = point.distanceTo(vectors(drag.start)) > 1e-4; drag.previewDirty = true;
+    }
+    event.stopImmediatePropagation(); event.preventDefault(); return;
+  }
   if (drag?.kind === 'cell') {
     const hit = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
     if (hit) {
@@ -1069,7 +1124,7 @@ renderer.domElement.addEventListener('pointermove', event => {
   }
   const dot = !state.generating && (state.cornerMode && cornerGroup.visible && !cornerPending && raycaster.intersectObjects(cornerGroup.children)[0]
     || state.edit && !state.multiSelect && !event.shiftKey && canArrange() && seedGroup.visible && raycaster.intersectObjects(seedGroup.children)[0]);
-  viewport.style.cursor = dot ? 'grab' : 'default';
+  viewport.style.cursor = state.splitMode && state.view === 'surface' ? 'crosshair' : dot ? 'grab' : 'default';
   const hovered = raycaster.intersectObjects(cellGroup.children.filter(o => o.isMesh))[0]?.object.userData.cellId ?? null;
   if (hovered !== hoverId) {
     hoverId = hovered;
@@ -1083,7 +1138,10 @@ function endDrag(event) {
     drag = null; down = null; controls.enabled = true; viewport.style.cursor = 'default';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (moved.changed) {
-      if (moved.kind === 'cell') commitDirectEdit({ type: 'move-cell', cellId: moved.handle.cellId, target: moved.target }, moved.before);
+      if (moved.kind === 'split') {
+        const nextCellId = state.nextCellId++;
+        commitDirectEdit({ type: 'split-cell', cellId: moved.cellId, start: moved.start, end: moved.end, nextCellId }, moved.before);
+      } else if (moved.kind === 'cell') commitDirectEdit({ type: 'move-cell', cellId: moved.handle.cellId, target: moved.target }, moved.before);
       else commitCornerMove(moved);
     } else { clearCornerSketch(); disposeGroup(cornerGuide); buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateStats(); updateExportAvailability(); updateEditAvailability(); }
     event.stopImmediatePropagation(); event.preventDefault(); return;
@@ -1184,7 +1242,8 @@ $('reset-layout').addEventListener('click', () => freshLayout());
 $('edit-toggle').addEventListener('click', () => {
   cancelCornerPending();
   state.edit = !state.edit;
-  if (state.edit) { state.multiSelect = false; state.cornerMode = false; }
+  if (state.edit) { state.multiSelect = false; state.cornerMode = false; state.splitMode = false; }
+  $('split-cell').setAttribute('aria-pressed', String(state.splitMode));
   $('edit-toggle').setAttribute('aria-pressed', String(state.edit));
   $('multi-select').setAttribute('aria-pressed', String(state.multiSelect));
   $('corner-toggle').setAttribute('aria-pressed', String(state.cornerMode));
@@ -1201,6 +1260,7 @@ $('explode').addEventListener('input', () => { cancelCornerDrag(); cancelCornerP
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   cancelCornerDrag(); cancelCornerPending();
   state.view = button.dataset.view;
+  if (state.view !== 'surface') { state.splitMode = false; $('split-cell').setAttribute('aria-pressed', 'false'); }
   document.querySelectorAll('[data-view]').forEach(b => { const active = b.dataset.view === state.view; b.classList.toggle('is-active', active); b.setAttribute('aria-pressed', String(active)); });
   buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateExportAvailability(); updateViewportHint(); updateStats();
   setStatus(state.sourceSurface ? 'Layout accepted · Fitted views and stock checks are updating…' : state.view === 'reference' ? 'Reference mesh · Boundary openings preserved' : state.cornerMode ? 'Slide a shared corner · Release to refit · Esc cancels' : state.view === 'flat' ? 'Fitted panels · Shared edges matched · Highlighted problem panels need adjustment' : state.view === 'solid' ? 'Panel solids · Select a panel to inspect or export' : state.pattern.type !== 'organic' ? 'Structured cells · Select a panel to inspect or merge' : 'Drag a handle to reshape cells · Click a panel to inspect');
@@ -1258,6 +1318,8 @@ function updatePanelDiagnostics(waiting) {
   }
 }
 function updateExportAvailability() {
+  laserUI.update({ result: state.result, name: state.name, center: state.analysis?.center, flipDirection: state.flipOutside,
+    ready: !!state.cells.length && state.solved && !state.busy && !state.pending && !state.generating && !cornerPending && !directDrag() });
   const waiting = state.busy || !!state.pending || !state.cells.length || !state.solved || !!cornerPending || directDrag();
   const waitingReason = !state.cells.length ? 'Load a model and calculate panels first.' : cornerPending || directDrag()
     ? 'Finish the corner edit and wait for validation.' : 'Wait for the current panel calculation.';
@@ -1376,7 +1438,7 @@ $('study-file').addEventListener('change', async event => {
     state.allowCellRemoval = study.allowCellRemoval; $('allow-cell-removal').checked = study.allowCellRemoval;
     $('size').min = Math.max(1, study.size / 3); $('size').max = study.size * 3;
     syncDesignControls();
-    loadModel(study.rawModel, study.name, { seeds: study.seeds, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout, directBase: study.directBase, preserveSettings: true });
+    loadModel(study.rawModel, study.name, { seeds: study.seeds, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout, directBase: study.directBase, nextCellId: study.nextCellId, preserveSettings: true });
     document.querySelector(`[data-view="${study.view}"]`)?.click();
     if (study.camera && study.target) { camera.position.fromArray(study.camera); controls.target.fromArray(study.target); controls.update(); }
   } catch (error) { if (opening === studyOpenRevision) setStatus(`Could not open study: ${error.message}`, true); }
@@ -1430,7 +1492,7 @@ async function loadExample(id) {
     cancelPendingEdit(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
     Object.assign(state, { variation: .3, randomSeed: 7, straightness: .7, thickness: 40, roundover: 2,
       carve: false, minimumThickness: 12, flipOutside: false, explode: 0, allowCellRemoval: true,
-      edit: true, cornerMode: false, multiSelect: false, view: 'surface' });
+      edit: true, cornerMode: false, multiSelect: false, splitMode: false, view: 'surface' });
     $('model-units').value = example.units; $('model-up').value = example.up;
     $('explode').value = 0; $('allow-cell-removal').checked = true; $('corner-status').textContent = '';
     $('edit-toggle').setAttribute('aria-pressed', 'true'); $('corner-toggle').setAttribute('aria-pressed', 'false'); $('multi-select').setAttribute('aria-pressed', 'false');
@@ -1459,7 +1521,7 @@ new ResizeObserver(() => {
   if (!width || !height) return;
   renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix();
 }).observe(viewport);
-function animate() { paintCornerSketch(); controls.update(); updateCornerPositions(); renderer.render(scene, camera); requestAnimationFrame(animate); }
+function animate() { paintSplitPreview(); paintCornerSketch(); controls.update(); updateCornerPositions(); renderer.render(scene, camera); requestAnimationFrame(animate); }
 animate();
 // Read-only diagnostics for geometry and interaction verification.
 window.cellStudy = { get state() { return state; }, get camera() { return camera; }, get controls() { return controls; },

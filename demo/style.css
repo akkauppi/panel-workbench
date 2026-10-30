@@ -321,3 +321,24 @@ input[type="range"]::-moz-range-thumb { width: 7px; height: 11px; border: 1px so
 .format-info h2 { margin:0 28px 12px 0; font-size:16px; }
 .format-info p { margin:10px 0; }
 .info-close { position:absolute; top:5px; right:8px; border:0; background:transparent; font-size:22px; color:#41617f; }
+
+body:not(:has(#split-cell[aria-pressed="true"])) .split-help { display: none; }
+
+.laser-dialog { width: min(850px, calc(100vw - 28px)); max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid #9eafbf; border-radius: 6px; padding: 22px; color: #31465a; background: #f8fafc; font-size: 13px; }
+.laser-dialog::backdrop { background: #152d4a70; }
+.laser-dialog header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.laser-dialog h2 { margin: 0; font-size: 19px; }
+.laser-dialog p { line-height: 1.5; }
+.laser-dialog button { padding: 7px 11px; border: 1px solid #a4b4c4; border-radius: 4px; background: white; color: #264567; cursor: pointer; }
+.laser-dialog button:disabled { opacity: .5; cursor: default; }
+.laser-controls, .laser-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0; }
+.laser-controls label { display: grid; gap: 5px; font-weight: 600; }
+.laser-controls input, .laser-controls select { min-height: 32px; padding: 5px 7px; border: 1px solid #a4b4c4; background: white; color: #23394e; }
+.laser-controls input { width: 110px; }
+.laser-note { color: #52667b; font-size: 12px; }
+#laser-status { padding: 10px; background: #e7eef7; }
+#laser-status.is-error { background: #f9e7df; color: #8a381f; }
+#laser-preview { display: block; width: min(100%, 500px); height: auto; margin: 14px auto; border: 1px solid #a4b4c4; background: white; }
+.laser-legend { display: flex; flex-wrap: wrap; gap: 10px 20px; list-style: none; padding: 0; }
+.laser-legend li { border-left: 10px solid; padding-left: 5px; font-size: 12px; }
+@media (max-width: 600px) { .laser-dialog { padding: 14px; } .laser-controls label { flex: 1 1 130px; } .laser-controls input, .laser-controls select { width: 100%; } }

@@ -12,6 +12,12 @@ In Cells, choose Drag corners. Adjoining seams and translucent cells follow the 
 
 Move cells remains available after corner edits, merges and for structured layouts. In these layouts, a centre handle moves the cell's shared corners together on the shell while preserving the authored seams and generator provenance. Boundary junctions slide along the source perimeter, so a boundary cell's centre may travel less than the handle. Release applies the checked edit as one undo step; crossing or collapsing seams are rejected without changing the accepted layout. Organic layouts without direct edits or merges retain their seed-based centre movement.
 
+Select one cell and choose **Divide cell**. Drag a line inside it to set a divider; the preview extends to its boundary and follows the source shell. Release creates two cells as one Undo step. Cuts that make disconnected pieces or unusable slivers are rejected with an explanation. The new panel has a stable ID, and saved studies retain the split and original generator provenance.
+
+## Laser scale models
+
+**Export → Laser scale model** prepares connected nets on 400 × 400 mm sheets, with separate cut, fold-groove and label colours for LightBurn. Preview and download each sheet and face as SVG. A hinge coupon compares four groove widths. Start with a physical plywood test; laser settings and material bending are not simulated. Read the [laser model workflow](docs/laser-models.md) for layers, front/back registration and incomplete exports.
+
 ## Develop locally
 
 Use Node.js 24 or newer. The runtime and geometry tests have no npm dependencies; Three.js is vendored with its licence.

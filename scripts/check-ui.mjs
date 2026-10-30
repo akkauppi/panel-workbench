@@ -44,6 +44,8 @@ window.HTMLElement.prototype.releasePointerCapture = function () { this._capture
 window.HTMLElement.prototype.hasPointerCapture = function (id) { return this._capture === id; };
 const drawing = new Proxy({}, { get: (target, key) => key in target ? target[key] : () => {}, set: (target, key, value) => (target[key] = value, true) });
 window.HTMLCanvasElement.prototype.getContext = () => drawing;
+window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+window.HTMLDialogElement.prototype.close = function () { this.open = false; };
 URL.createObjectURL = blob => { const url = `blob:check-${blobs.size}`; blobs.set(url, blob); return url; };
 URL.revokeObjectURL = () => {};
 window.HTMLAnchorElement.prototype.click = function () { downloads.push({ name: this.download, blob: blobs.get(this.href) }); };
@@ -510,7 +512,7 @@ function assertNeutralTools(label) {
   assert.equal(state.selected, null, `${label}: clears the selected panel`);
   assert.deepEqual(state.selectedIds, [], `${label}: clears multi-selection`);
   assert.equal(state.selectedCorner, null, `${label}: clears the selected corner`);
-  for (const [id, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect']]) {
+  for (const [id, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect'], ['split-cell', 'splitMode']]) {
     assert.equal(state[field], false, `${label}: resets ${field}`);
     assert.equal($(id).getAttribute('aria-pressed'), 'false', `${label}: ${id} reflects its inactive mode`);
   }
@@ -1961,8 +1963,9 @@ console.log('PASS native Rhino production download, 3DM planar source import, un
 // change should be needed simply to leave a selected editing tool.
 await openStudy(cornerStudy, 'Escape tool reset fixture');
 escape(); assertNeutralTools('initial neutral Escape');
-for (const [tool, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect']]) {
+for (const [tool, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect'], ['split-cell', 'splitMode']]) {
   const before = currentDesign(), history = structuredClone(state.history), future = structuredClone(state.future);
+  if (field === 'splitMode') clickSeed(0);
   clickControl(tool); assert.equal(state[field], true);
   if (field === 'cornerMode') {
     const corner = state.result.corners.find(item => !item.boundary), point = window.cellStudy.projectCorner(corner.id);
@@ -2116,6 +2119,73 @@ const mergedCentreSave = await saveStudy();
 await openStudy(mergedCentreSave, 'reopen merged centre movement');
 assert.deepEqual(currentDesign(), afterMergedCentre);
 console.log('PASS ordinary organic merge exposes an editable centre and preserves merged provenance, undo/redo and saved geometry');
+
+// Dividing is an explicit source edit; dragging is only a preview until release.
+await openStudy(cornerStudy, 'divider fixture');
+escape();
+assert.equal($('split-cell').disabled, true, 'division requires one selected cell');
+let splitPoint = projectWorld([250,300,0]);
+pointer(canvas,'pointerdown',splitPoint.x,splitPoint.y); pointer(canvas,'pointerup',splitPoint.x,splitPoint.y);
+assert.equal(state.selected,0); assert.equal($('split-cell').disabled,false);
+clickControl('split-cell');
+assert.equal(state.splitMode,true); assert.equal(state.edit,false); assert.equal(state.cornerMode,false);
+const beforeSplit = currentDesign(), beforeSplitHistory = state.history.length, reservedSplitId = state.nextCellId;
+function beginSplit() {
+  const from = projectWorld([250,200,0]), to = projectWorld([250,450,0]);
+  pointer(canvas,'pointerdown',from.x,from.y);
+  assert.equal(window.cellStudy.controls.enabled,false,'divider captures the selected source cell');
+  pointer(canvas,'pointermove',to.x,to.y);
+  return to;
+}
+let splitTo = beginSplit();
+assert.deepEqual(currentDesign(),beforeSplit,'divider preview never changes source geometry');
+escape(); pointer(canvas,'pointerup',splitTo.x,splitTo.y);
+assertNeutralTools('divider preview cancellation'); assert.deepEqual(currentDesign(),beforeSplit);
+pointer(canvas,'pointerdown',splitPoint.x,splitPoint.y); pointer(canvas,'pointerup',splitPoint.x,splitPoint.y);
+clickControl('split-cell');
+await edit(()=>{splitTo=beginSplit();pointer(canvas,'pointerup',splitTo.x,splitTo.y);},'divide selected cell');
+assert.equal(state.cells.length,4); assert.equal(state.selected,reservedSplitId);
+assert.equal(state.layout.version,3); assert.equal(state.layout.splitOrigins.length,1);
+assert.deepEqual(state.seeds,beforeSplit.seeds); assert.deepEqual(state.layout.recipe,beforeSplit.layout.recipe);
+assert.equal(state.history.length,beforeSplitHistory+1);
+close(state.result.surfaceCells.reduce((sum,cell)=>sum+cell.area,0),1200*1200,'split preserves source coverage');
+const afterSplit=currentDesign(), afterSplitNextId=state.nextCellId;
+await edit(()=>key('z'),'undo division'); assert.deepEqual(currentDesign(),beforeSplit); assert.equal(state.nextCellId,afterSplitNextId,'undo cannot reuse a reserved panel ID');
+await edit(()=>key('z',{shiftKey:true}),'redo division'); assert.deepEqual(currentDesign(),afterSplit);
+const splitSaved=await saveStudy(); await openStudy(splitSaved,'reopen split graph');
+assert.deepEqual(currentDesign(),afterSplit); assert.equal(state.nextCellId,afterSplitNextId);
+// A reply arriving after Escape must not add the reserved child.
+escape(); splitPoint=projectWorld([100,300,0]); pointer(canvas,'pointerdown',splitPoint.x,splitPoint.y); pointer(canvas,'pointerup',splitPoint.x,splitPoint.y);
+// Split the other side horizontally to avoid drawing the existing seam again.
+clickControl('split-cell');
+const pendingBefore=currentDesign(), heldSplitIndex=heldValidationReplies.length;
+holdNextValidationReply=true;
+const pendingFrom=projectWorld([100,220,0]),pendingTo=projectWorld([200,220,0]);
+pointer(canvas,'pointerdown',pendingFrom.x,pendingFrom.y);pointer(canvas,'pointermove',pendingTo.x,pendingTo.y);pointer(canvas,'pointerup',pendingTo.x,pendingTo.y);
+await until(()=>heldValidationReplies.length>heldSplitIndex,'held divider validation');
+escape();heldValidationReplies[heldSplitIndex].deliver();await Promise.resolve();await Promise.resolve();
+assertNeutralTools('pending divider cancellation');assert.deepEqual(currentDesign(),pendingBefore);
+assert.ok(state.nextCellId>afterSplitNextId,'cancelled validation retires the reserved ID');
+console.log('PASS divider preview, source preservation, undo/redo, ID retirement, save/reopen and cancelled stale replies');
+
+// Laser preparation is asynchronous and invalidated by later design/settings edits.
+clickControl('open-laser');assert.equal($('laser-dialog').open,true);
+clickControl('laser-coupon');assert.equal($('laser-download').disabled,false);
+let beforeLaserDownloads=downloads.length;
+clickControl('laser-download');assert.equal(downloads.length,beforeLaserDownloads+1);
+let laserSVG=await downloads.at(-1).blob.text();
+assert.match(laserSVG,/width="400mm"/);assert.match(laserSVG,/GROOVE_BANDS/);assert.match(laserSVG,/data-label="50 MM"/);
+clickControl('laser-build');await until(()=>!$('laser-download').disabled,'laser model sheet preparation');
+assert.match($('laser-status').textContent,/4 panels/);
+clickControl('laser-download');laserSVG=await downloads.at(-1).blob.text();
+assert.match(laserSVG,/<svg/);assert.match(laserSVG,/CUT/);
+assert.equal($('laser-side').querySelector('[value="back"]').disabled,true,'planar grid needs no back engraving');
+input('laser-scale','12');assert.equal($('laser-download').disabled,true,'changed scale invalidates SVG');
+clickControl('laser-build');await until(()=>!$('laser-download').disabled,'laser changed scale preparation');
+clickControl('close-laser');assert.equal($('laser-dialog').open,false);
+await edit(()=>{input('thickness','41');input('thickness','41','change');},'stock update after laser preview');
+assert.equal($('laser-download').disabled,true,'changed source invalidates prepared sheets');
+console.log('PASS laser coupon, model sheet preparation, front/back SVG download, settings and source invalidation');
 
 assert.equal(errors.length, 0, errors.map(error => error.message).join('\n'));
 console.log('Browserless integration PASSED. WebGL rendering and browser layout were not tested.');
