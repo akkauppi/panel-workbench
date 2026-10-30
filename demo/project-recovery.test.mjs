@@ -50,6 +50,20 @@ test('recovery opens lazily and never saves a startup gallery or writes on list'
   assert.equal(storage.records.size, 0);
 });
 
+test('recovery retains user activity time independently of delayed write order', async () => {
+  const { store } = fixture();
+  const newer = await store.save({ study: study(3), activeAt: 2000 });
+  const late = await store.save({ study: study(2), activeAt: 1000 });
+  const records = await store.list();
+  assert.equal(records[0].id, late.id, 'catalogue still records physical write order');
+  assert.equal(records.find(record => record.id === newer.id).activeAt, 2000);
+  assert.equal(records.find(record => record.id === late.id).activeAt, 1000);
+  assert.equal((await store.read(newer.id)).activeAt, undefined, 'browser metadata does not alter v6 project files');
+  const before = await store.list();
+  await assert.rejects(store.save({ study: study(4), activeAt: NaN }), /activity time/);
+  assert.deepEqual(await store.list(), before);
+});
+
 test('snapshot captures invocation-time design and read returns independent copies', async () => {
   const { store, storage } = fixture();
   let release;

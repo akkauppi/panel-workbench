@@ -626,13 +626,16 @@
       </main>
     </div>
     <section class="project-bar" aria-label="Project safety and feedback">
+      <label class="checkbox-row" title="Save accepted work in this browser and reopen it next time. Download a study for a portable backup."><input id="local-save-enabled" type="checkbox" checked><span>Save locally and resume</span></label>
       <span id="project-status" role="status">Recovery copies are stored in this browser.</span>
       <button id="recovery-open" type="button" class="button">Recovery</button>
       <button id="download-feedback" type="button" class="button" title="Download build, revision, panel IDs and checks. Source geometry and project names are excluded.">Download feedback report</button>
+      <p id="local-save-note" class="control-hint" role="status" hidden></p>
     </section>
     <dialog id="recovery-dialog" class="recovery-dialog" aria-labelledby="recovery-title">
       <h2 id="recovery-title">Recover a project</h2>
       <p>Copies are stored in this browser. Clearing browser storage removes them. Download project files for backups you keep.</p>
+      <p>Save locally and resume is on by default. Turning it off stops new automatic copies and automatic reopening. Existing copies remain here until you delete them.</p>
       <p>Opening an older copy retains its revision. Its next edit starts another branch of that project; keep separate downloaded files when comparing alternatives.</p>
       <div id="recovery-list"></div>
       <button id="recovery-close" class="button" type="button">Close</button>

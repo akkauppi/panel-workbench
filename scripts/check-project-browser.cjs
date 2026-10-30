@@ -129,16 +129,18 @@ async function main() {
       report.build = build;
       return { filename: saved.filename, bytes: Buffer.byteLength(saved.text), sourceHash: digest(saved.value.layout) };
     });
-    await check('reload offers recovery without replacing the startup document', async () => {
+    await check('reload automatically resumes the saved accepted project', async () => {
       const before = (await recovery()).map(record => record.id);
-      await page.reload(); await solved(); await pause(1100);
+      await page.reload();
+      await page.waitForFunction(id => window.cellStudy?.state.project?.id === id, edited.project.id);
+      await solved();
       const current = await snapshot();
-      assert.notEqual(current.project.id, edited.project.id);
-      assert.equal(current.thickness, initial.thickness);
-      assert.equal(current.recoveryEnabled, false);
-      assert.deepEqual((await recovery()).map(record => record.id), before);
-      assert.match(await page.locator('#project-status').innerText(), /recovery cop(?:y|ies).*available/i);
-      return { retainedCopies: before.length };
+      assert.deepEqual(current.project, edited.project);
+      sameSource(current, edited);
+      assert.equal(current.thickness, edited.thickness);
+      assert.equal(current.recoveryEnabled, true);
+      assert.ok((await recovery()).some(record => before.includes(record.id)), 'the original recovery copy remains available');
+      return { retainedCopies: before.length, resumedRevision: current.project.revision };
     });
     await check('explicit recovery restores project identity and source exactly', async () => {
       await page.locator('#recovery-open').click();

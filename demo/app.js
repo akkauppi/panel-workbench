@@ -71,7 +71,7 @@ const validationWorker = new Worker('./worker.js', { type: 'module' });
 let rhinoWorker = null;
 const rhinoRequests = new Map();
 let rhinoSequence = 0, exportingRhino = false;
-let diagnosticResult = null, diagnosticWaiting = null, projectUI;
+let diagnosticResult = null, diagnosticWaiting = null, projectUI, restoringStudy = false, startupRestoreOpening = null;
 function rhinoOperation(inputs) {
   if (!rhinoWorker) {
     rhinoWorker = new Worker('./rhino-worker.js', { type: 'module' });
@@ -263,7 +263,7 @@ worker.onmessage = ({ data }) => {
       state.solved = true;
       state.revision++;
       updateCalculationFeedback(summarizeCalculation(data.result));
-      if (state.recoveryEnabled) projectUI?.changed();
+      if (state.recoveryEnabled) projectUI?.changed({ activity: false });
       if (!directDrag() && !cornerPending) {
         buildCells();
         if (!drag) buildSeeds();
@@ -559,6 +559,7 @@ function updateCameraButtons() {
   }
 }
 controls.addEventListener('change', updateCameraButtons);
+controls.addEventListener('end', () => { if (!restoringStudy) projectUI?.viewChanged(); });
 function fitView(preset = 'iso') {
   if (!state.analysis) return;
   // Finish damping before applying a named view so an old orbit/pan cannot
@@ -631,7 +632,7 @@ function buildReference() {
   document.querySelector('.compass-mark').firstChild.textContent = zUp ? 'Z' : 'Y';
   updateReference();
 }
-function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern, projectDocument = null, startup = false, recovered = false } = {}) {
+function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern, projectDocument = null, startup = false, recovered = false, localActivityAt } = {}) {
   const factor = { mm: 1, cm: 10, m: 1000 }[$('model-units').value];
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
   if (model.vertices.some(p => p.length !== 3) || model.triangles.some(t => t.length !== 3 || t.some(i => !Number.isInteger(i) || i < 0 || i >= model.vertices.length))) throw new Error('The model contains invalid face indices or coordinates.');
@@ -673,6 +674,8 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   $('mesh-note').textContent = `${state.model.triangles.length.toLocaleString()} triangles · ${state.analysis.dimensions.map(v => (v / 1000).toFixed(2)).join(' × ')} m`;
   document.querySelector('.app-footer span').textContent = `${name} · All study dimensions in mm`;
   buildReference(); fitView(); updateInspector(); syncDesignControls();
+  projectUI?.documentChanged({ activeAt: localActivityAt });
+  if (state.recoveryEnabled) projectUI?.changed({ activity: false });
   requestLayout({ fresh: !seeds, newModel: true });
 }
 function updateControlLabels() {
@@ -1428,9 +1431,9 @@ $('show-seeds').addEventListener('change', buildSeeds);
 $('show-original').addEventListener('change', updateReference);
 $('show-fitting').addEventListener('change', buildFittingOverlay);
 $('show-assembly-guides').addEventListener('change', () => { buildAssemblyGuides(); if (state.explode) fitView(null); });
-$('fit-view').addEventListener('click', () => { cancelCornerDrag(); cancelCornerPending(); fitView(null); });
+$('fit-view').addEventListener('click', () => { cancelCornerDrag(); cancelCornerPending(); fitView(null); projectUI?.viewChanged(); });
 document.querySelectorAll('[data-camera-view]').forEach(button => button.addEventListener('click', () => {
-  cancelCornerDrag(); cancelCornerPending(); fitView(button.dataset.cameraView);
+  cancelCornerDrag(); cancelCornerPending(); fitView(button.dataset.cameraView); projectUI?.viewChanged();
 }));
 document.querySelectorAll('[data-browser-view]').forEach(button => button.addEventListener('click', () => showView(button.dataset.browserView)));
 $('explode').addEventListener('input', () => { cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
@@ -1442,6 +1445,7 @@ document.querySelectorAll('[data-view]').forEach(button => button.addEventListen
   document.querySelectorAll('[data-view]').forEach(b => { const active = b.dataset.view === state.view; b.classList.toggle('is-active', active); b.setAttribute('aria-pressed', String(active)); });
   buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateExportAvailability(); updateViewportHint(); updateStats();
   setStatus(state.sourceSurface ? 'Layout accepted · Fitted views and stock checks are updating…' : state.view === 'reference' ? 'Reference mesh · Boundary openings preserved' : state.cornerMode ? 'Slide a shared corner · Release to refit · Esc cancels' : state.view === 'flat' ? 'Fitted panels · Shared edges matched · Highlighted problem panels need adjustment' : state.view === 'solid' ? 'Panel solids · Select a panel to inspect or export' : state.pattern.type !== 'organic' ? 'Structured cells · Select a panel to inspect or merge' : 'Drag a handle to reshape cells · Click a panel to inspect');
+  if (!restoringStudy) projectUI?.viewChanged();
 }));
 document.querySelectorAll('[data-color]').forEach(button => button.addEventListener('click', () => {
   state.color = button.dataset.color;
@@ -1457,7 +1461,7 @@ $('model-units').addEventListener('change', async () => {
   loadModel(state.rawModel, state.name);
   setStatus('Source units changed; a new layout is being prepared. The earlier project remains in Recovery or your downloaded copy.');
 });
-$('model-up').addEventListener('change', () => { if (state.model) { state.documentUp = $('model-up').value; acceptedProjectChange('orientation'); buildReference(); fitView(); } });
+$('model-up').addEventListener('change', () => { if (state.model) { state.documentUp = $('model-up').value; buildReference(); fitView(); acceptedProjectChange('orientation'); } });
 const flipLabel = document.createElement('label'); flipLabel.className = 'checkbox-row';
 const flipInput = document.createElement('input'); flipInput.type = 'checkbox'; flipInput.id = 'flip-outside';
 const flipText = document.createElement('span'); flipText.textContent = 'Flip inside / outside';
@@ -1609,7 +1613,16 @@ $('download-feedback').addEventListener('click', () => {
   setStatus('Feedback report download requested · Contains build, revision, panel IDs and checks; no source mesh, coordinates or project name. Add what you expected and what happened when sharing it.');
 });
 window.addEventListener('beforeunload', event => {
-  if (state.recoveryEnabled && state.downloadedRevision !== state.project?.revision) { event.preventDefault(); event.returnValue = ''; }
+  const unfinished = pendingEdit || cornerPending || drag?.changed || state.generating;
+  if (unfinished || state.recoveryEnabled && state.downloadedRevision !== state.project?.revision) {
+    // Local recovery is useful but is not a portable backup, and a final async
+    // write cannot be guaranteed while the browser is closing this document.
+    projectUI?.flush();
+    event.preventDefault(); event.returnValue = true;
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') projectUI?.flush();
 });
 $('load-study').addEventListener('click', () => $('study-file').click());
 function validateDesignGeometry(inputs) {
@@ -1625,23 +1638,30 @@ function validateStudyGeometry(study) {
     model: { vertices: study.rawModel.vertices.map(point => point.map(value => value * factor)), triangles: study.rawModel.triangles },
     seeds: study.seeds, size: study.size, pattern: study.pattern, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
 }
-async function openStudyDocument(study, { recovered = false, checkpoint = true } = {}) {
+async function openStudyDocument(study, { recovered = false, checkpoint = true, activeAt, automatic = false } = {}) {
   const opening = ++studyOpenRevision;
+  if (automatic) startupRestoreOpening = opening;
   const currentRevision = state.project?.revision, currentId = state.project?.id;
   setStatus('Checking the saved surface layout…');
   const { layout } = await validateStudyGeometry(study);
-  if (opening !== studyOpenRevision) return;
+  if (opening !== studyOpenRevision) return false;
+  if (automatic && !projectUI.isEnabled()) return false;
   if (currentRevision !== state.project?.revision || currentId !== state.project?.id) throw new Error('The current project changed while opening. Try opening again; the current work is kept.');
-  if (checkpoint && !await checkpointBeforeReplacement() || opening !== studyOpenRevision) return;
+  if (checkpoint && !await checkpointBeforeReplacement() || opening !== studyOpenRevision) return false;
   cancelPendingEdit();
   $('model-units').value = study.units; $('model-up').value = study.up;
   Object.assign(state, captureDesign(study));
   state.allowCellRemoval = study.allowCellRemoval; $('allow-cell-removal').checked = study.allowCellRemoval;
   $('size').min = Math.max(1, study.size / 3); $('size').max = study.size * 3;
   syncDesignControls();
-  loadModel(study.rawModel, study.name, { seeds: study.seeds, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout, directBase: study.directBase, nextCellId: study.nextCellId, preserveSettings: true, projectDocument: study, recovered });
-  document.querySelector(`[data-view="${study.view}"]`)?.click();
-  if (study.camera && study.target) { camera.position.fromArray(study.camera); controls.target.fromArray(study.target); controls.update(); }
+  restoringStudy = true;
+  try {
+    loadModel(study.rawModel, study.name, { seeds: study.seeds, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout, directBase: study.directBase, nextCellId: study.nextCellId, preserveSettings: true, projectDocument: study, recovered, localActivityAt: activeAt });
+    document.querySelector(`[data-view="${study.view}"]`)?.click();
+    if (study.camera && study.target) { camera.position.fromArray(study.camera); controls.target.fromArray(study.target); controls.update(); }
+    projectUI?.changed({ activity: false });
+  } finally { restoringStudy = false; }
+  return true;
 }
 $('study-file').addEventListener('change', async event => {
   const file = event.target.files[0]; if (!file) return;
@@ -1742,5 +1762,12 @@ window.cellStudy = { get state() { return state; }, get camera() { return camera
   projectCorner(id) { const corner = arrangementCorners().find(c => c.id === id); if (!corner) return null; const position = cornerDisplayPosition(corner, state.view, camera.position.toArray()); if (!position) return null; const p = vectors(position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectSeed(id) { const seed = state.seeds.find(s => s.id === id); if (!seed) return null; const p = vectors(seed.position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; } };
 projectUI = initProjectUI({ getStudy: () => state.recoveryEnabled && !pendingEdit ? currentStudy() : null,
-  openStudy: study => openStudyDocument(readStudy(study), { recovered: true }), download, setStatus });
-loadExample(DEFAULT_EXAMPLE_ID, { startup: true });
+  // Manual recovery validates asynchronously. Checkpoint again at installation
+  // so edits begun while validation runs are not silently replaced.
+  openStudy: (study, options = {}) => openStudyDocument(readStudy(study), { recovered: true, ...options, checkpoint: !options.automatic }), download, setStatus });
+// Decide on recovery before opening the gallery. A late default example must
+// never replace an automatically restored project or an explicit user import.
+const startupOpening = studyOpenRevision;
+projectUI.restoreLatest({ isCurrent: () => studyOpenRevision === startupOpening && !state.model }).then(restored => {
+  if (!restored && studyOpenRevision === (startupRestoreOpening ?? startupOpening) && !state.model) loadExample(DEFAULT_EXAMPLE_ID, { startup: true });
+});

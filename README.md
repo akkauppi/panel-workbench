@@ -30,8 +30,26 @@ Read [From a shell to buildable panels](docs/how-panels-are-fitted.md) for an il
 
 Studies store the source mesh, authored layout, settings, project ID and revision.
 You can save accepted source work even when fitting is pending or unsuccessful.
-Local recovery copies help restore interrupted work; browser storage can be
-cleared, so download study files for portable backups.
+
+The current release adds **Save locally and resume** in the bottom project bar,
+enabled by default. It saves accepted source work and
+settings in this browser, then automatically restores the latest saved snapshot,
+including its view and camera, on the next start. It uses the existing v6 study
+document; it does
+not restore the Undo stack, selection, active editing gesture/tool or explosion
+amount.
+
+Switching the option off stops new local copies and automatic resume. Existing
+copies remain available under **Recovery copies** until manually deleted. Full
+project snapshots, including geometry, use IndexedDB; only the on/off preference
+uses localStorage. Nothing is uploaded by local saving.
+
+Download study files for portable backups. Storage clearing, browser eviction,
+mobile app termination or a crash can prevent recovery. Closing or reloading
+requests the browser's generic warning for work that has not been downloaded or
+for pending edits, even when a local copy exists; browsers do not always show
+that warning. See [local save and resume limits](docs/production-readiness.md#local-save-and-resume)
+for the release contract and verification checkpoints.
 
 The durable compatibility baseline is **study v6 from the final version deployed
 on 2026-10-30**. Future versions must retain that authored design through supported
@@ -71,7 +89,7 @@ npm run build:pages
 
 The optional browserless interaction suite needs jsdom. Install it separately and run `JSDOM_MODULE=/path/to/jsdom/lib/api.js npm run test:ui`. That suite mocks rendering; it does not verify actual WebGL appearance or hardware frame rate.
 
-Real Chromium checks are available in `scripts/check-project-browser.cjs` (editing, downloads and recovery), `scripts/check-recovery-browser.cjs` (large snapshots and storage transactions), and `scripts/check-explode-browser.cjs` (exploded view, guides and matching downloads). They use an optional Playwright installation; see each script header for environment variables. Use `PANEL_BROWSER_URL` with the project check to test the packaged or deployed site.
+Real Chromium checks are available in `scripts/check-project-browser.cjs` (editing, downloads and recovery), `scripts/check-local-save-browser.cjs` (automatic resume, opt-out and leave-page warnings), `scripts/check-recovery-browser.cjs` (large snapshots and storage transactions), and `scripts/check-explode-browser.cjs` (exploded view, guides and matching downloads). They use an optional Playwright installation; see each script header for environment variables. Use `PANEL_BROWSER_URL` with the project check to test the packaged or deployed site.
 
 This repository is self-contained: app source is in demo/, serving code in server.mjs, synthetic tests alongside the app, and packaging tools in scripts/. GitHub Actions runs the tests and publishes only the reviewed static app from dist/panel-workbench-pages/ to Pages on each main-branch push. Configure Settings > Pages > Source as GitHub Actions.
 

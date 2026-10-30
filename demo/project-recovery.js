@@ -96,12 +96,13 @@ function openIndexedDB(indexedDB, databaseName) {
   });
 }
 
-function snapshotInput({ study, label, reason = 'automatic' }, maximumBytes) {
+function snapshotInput({ study, label, reason = 'automatic', activeAt }, maximumBytes) {
   if (!study || typeof study !== 'object' || !study.project || typeof study.project.id !== 'string' || !study.project.id.trim() ||
       !Number.isSafeInteger(study.project.revision) || study.project.revision < 1) {
     throw new RecoveryStorageError('invalid-study', 'Recovery needs a study with a project ID and revision. Download the current study file and try again.');
   }
   if (!['automatic', 'before-replacement'].includes(reason)) throw new TypeError('Unknown recovery reason.');
+  if (activeAt !== undefined && (!Number.isSafeInteger(activeAt) || activeAt < 0)) throw new TypeError('Recovery activity time must be a non-negative timestamp.');
   let text;
   try { text = JSON.stringify(study); }
   catch (error) { throw new RecoveryStorageError('invalid-study', 'This study could not be serialized for local recovery.', error); }
@@ -110,7 +111,8 @@ function snapshotInput({ study, label, reason = 'automatic' }, maximumBytes) {
   if (byteLength > maximumBytes) throw new RecoveryStorageError('too-large',
     `This study exceeds the ${Math.floor(maximumBytes / 1024 / 1024)} MiB local recovery limit. Earlier recovery copies were kept. Download a study file to keep your work.`);
   return { text, metadata: { projectId: study.project.id, revision: study.project.revision,
-    label: String(label ?? study.name ?? 'Untitled study').slice(0, 250), reason, byteLength } };
+    label: String(label ?? study.name ?? 'Untitled study').slice(0, 250), reason, byteLength,
+    ...(activeAt !== undefined ? { activeAt } : {}) } };
 }
 
 function retention(records, added, limits) {

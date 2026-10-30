@@ -29,6 +29,7 @@ const dom = new JSDOM(await readFile(new URL('index.html', demo), 'utf8'), {
 const { window } = dom;
 for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLCanvasElement', 'Event', 'MouseEvent']) globalThis[name] = name === 'window' ? window : window[name];
 Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true });
+Object.defineProperty(globalThis, 'localStorage', { value: window.localStorage, configurable: true });
 globalThis.devicePixelRatio = 1;
 const animationFrames = [];
 globalThis.requestAnimationFrame = callback => animationFrames.push(callback);
@@ -2223,7 +2224,13 @@ assert.equal($('laser-download').disabled,true,'changed source invalidates prepa
 console.log('PASS laser coupon, model sheet preparation, front/back SVG download, settings and source invalidation');
 
 // Durable document behavior is independent of downstream fitting success.
+function leavingWarns() {
+  const event = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+}
 await openStudy(splitSaved, 'durable split fixture');
+assert.equal(leavingWarns(), false, 'opened downloaded source needs no close warning');
 const durableId = state.project.id, durableRevision = state.project.revision, durableLayout = structuredClone(state.layout);
 failNextFitReply = true;
 input('thickness', '47'); input('thickness', '47', 'change');
@@ -2245,6 +2252,7 @@ assert.equal(state.project.id, durableId);
 assert.match($('calculation-comparison').textContent, /Saved calculation r/);
 const revisionBeforeStock = state.project.revision;
 input('thickness', '49');
+assert.equal(leavingWarns(), true, 'uncommitted settings warn before they become a new accepted revision');
 await until(() => state.solved && !state.busy && !state.pending, 'fit completes before stock gesture ends');
 await new Promise(resolve => setTimeout(resolve, 800));
 assert.equal(state.project.revision, revisionBeforeStock, 'uncommitted settings do not advance the accepted revision');
@@ -2253,6 +2261,7 @@ assert.equal([...recoveryTexts.values()].map(text => JSON.parse(text)).some(stud
 input('thickness', '49', 'change');
 assert.equal(state.project.revision, revisionBeforeStock + 1);
 await until(() => [...recoveryTexts.values()].map(text => JSON.parse(text)).some(study => study.project.id === durableId && study.project.revision === state.project.revision && study.thickness === 49), 'committed settings receive current recovery revision');
+assert.equal(leavingWarns(), true, 'successful local saving does not suppress the portable-backup warning');
 assert.equal(state.lastCalculation.revision, state.project.revision);
 const revisionBeforeUndo = state.project.revision;
 await edit(() => key('z'), 'durable undo revision');
@@ -2276,7 +2285,28 @@ assert.ok(fitLines.every(line => line.geometry.attributes.position.count > 0));
 const guardedProject = structuredClone(state.project);
 await rejectStudyWithoutMutation({ ...failedFitSave, version: 7 }, 'reject unsupported future project');
 assert.deepEqual(state.project, guardedProject, 'future format rejection preserves current project identity');
-console.log('PASS durable revisions, saving/recovery through fitting failure, pending settings isolation, reopen comparison, fitting overlay and private diagnostic report');
+console.log('PASS durable revisions, saving/recovery through fitting failure, pending settings isolation, close warning, reopen comparison, fitting overlay and private diagnostic report');
+
+// Recovery validation is asynchronous. A slider begun after that validation
+// starts must get a protective checkpoint before the older copy replaces it.
+await until(() => [...recoveryRecords.values()].some(record => record.projectId === state.project.id && record.revision === state.project.revision), 'latest source saved before manual recovery race');
+const recoveryRows = [...recoveryRecords.values()].sort((a, b) => b.sequence - a.sequence);
+const restoreRow = recoveryRows.findIndex(record => record.projectId === state.project.id);
+const restoreDocument = JSON.parse(recoveryTexts.get(recoveryRows[restoreRow].id));
+clickControl('recovery-open');
+await until(() => $('recovery-list').querySelectorAll('.recovery-entry').length === recoveryRows.length, 'recovery list refreshed');
+const heldRecoveryIndex = heldValidationReplies.length;
+holdNextValidationReply = true;
+$('recovery-list').querySelectorAll('.recovery-entry')[restoreRow].querySelector('button').click();
+await until(() => heldValidationReplies.length > heldRecoveryIndex, 'manual recovery validation held');
+clickControl('recovery-close');
+const replacementRevision = state.project.revision;
+input('thickness', '52');
+heldValidationReplies[heldRecoveryIndex].deliver();
+await until(() => state.project.revision === restoreDocument.project.revision && state.thickness === restoreDocument.thickness && state.solved && !state.busy && !state.pending, 'manual recovery installed after checkpoint');
+assert.ok([...recoveryTexts.values()].map(text => JSON.parse(text)).some(study => study.project.id === restoreDocument.project.id && study.project.revision === replacementRevision + 1 && study.thickness === 52),
+  'an edit begun during recovery validation remains in its protective recovery copy');
+console.log('PASS manual recovery protects edits begun during asynchronous source validation');
 
 // Exploded placement is a presentation transform shared by render and exports.
 escape();

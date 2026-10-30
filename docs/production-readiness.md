@@ -120,6 +120,56 @@ share. Generating it does not upload anything. Although geometry and names are
 excluded, settings, issue counts and opaque project IDs can still reveal project
 characteristics; the report is intentionally compact, not anonymous.
 
+## Local save and resume
+
+The current release implements this workflow. Real Chromium checks cover
+automatic reopening, opt-out, before-close warnings, camera/orientation
+preservation, and fallback from an invalid saved source to manual recovery.
+
+**Save locally and resume**, in the bottom project bar, defaults to on unless the
+user has switched it off. With it enabled, accepted source work and settings are
+saved locally. On startup the app attempts to restore the latest available saved
+snapshot, including the study's view and camera, then recalculates fitted panels.
+An in-progress or rejected source gesture is not an accepted saved layout. A
+pending or failed panel calculation does not remove the accepted source work
+from that snapshot.
+
+Full study snapshots, including source geometry, are stored in **IndexedDB**.
+**localStorage** stores only the boolean on/off preference. The resume snapshot
+uses the existing v6 project document, with no change to its format or durable
+compatibility baseline. It does not preserve the session Undo/Redo stack,
+selection, temporary editing modes, unfinished gestures or explosion amount.
+
+Turning the checkbox off suppresses new local copies and automatic startup
+resume. It does not erase copies already stored in **Recovery copies**; those
+can still be inspected, restored, downloaded or manually deleted. Local saving
+does not upload a project or provide synchronization across devices or browsers.
+The preference also updates other open tabs of this site. A write already
+underway can finish; queued saves are cancelled. Background fitting alone does
+not make an older tab the most recently used project for automatic resume.
+
+The app requests a browser leave-page warning before closing, reloading or
+navigating away when work has not been downloaded or an edit is pending, even if
+a local recovery copy has been saved. The browser controls the generic wording
+and may suppress the dialog; `beforeunload` is particularly unreliable on mobile
+when an app is terminated. It must not be treated as the moment at which all work
+will safely be saved. See [MDN's beforeunload usage
+notes](https://developer.mozilla.org/en-US/docs/Web/API/Window/beforeunload_event#usage_notes).
+
+Browser storage has quotas and can be cleared or evicted; private browsing may
+discard it when the session ends. Crashes or mobile app termination can also
+interrupt a write before it finishes. Local resume is therefore a convenience,
+with a downloaded study as the portable backup. See [MDN's storage quotas and
+eviction guide](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+The 374 automated tests include preference/storage failures, cross-tab opt-out,
+activity ordering, and delayed startup guards. Browserless integration checks
+also cover saving through fitting failures, pending-edit close warnings, and
+protecting edits begun while manual recovery is being validated. The dedicated
+local-save browser script passes 10 scenarios; the existing project browser
+script passes 9. These checks do not establish crash recovery on every browser
+or device.
+
 ## Exploded inspection and assembly guides
 
 **Explode panels** derives a direction from each panel's position relative to the
@@ -208,9 +258,9 @@ native fabrication checks should be reported separately for each release.
    study readers preserve authored inputs, while fitted parts can be recalculated.
 
 Recovery is a convenience within that browser, not the only project copy. If
-storage is unavailable, keep a downloaded study before replacing the current
-project. Units changes start a new source interpretation and retain the previous
-one in Recovery when storage is available.
+local saving is off or storage is unavailable, keep a downloaded study before
+replacing the current project. Units changes start a new source interpretation;
+retain the previous one in a downloaded study or a completed recovery copy.
 
 ## Verification checkpoints
 
@@ -224,7 +274,9 @@ one in Recovery when storage is available.
 3. **Source/solver tests:** move corners and centres, split/merge and undo; measure
    accepted source coverage separately from flat/solid validity; preserve openings
    and shared boundaries; keep public synthetic cases for known failure classes.
-4. **Browser checks:** save during/after a failed calculation, reload and recover,
+4. **Browser checks:** save during/after a failed calculation; check the default-on
+   local-save option, automatic resume and the off state; reload and recover the
+   source/settings/view/camera; exercise storage failures and leave-page warnings;
    compare saved/current results, select affected panels and download diagnostics.
    Mocked renderer tests establish wiring, not WebGL performance or visual quality.
 5. **Rhino checks:** open in the intended Rhino version, verify millimetres and

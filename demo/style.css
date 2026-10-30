@@ -348,6 +348,9 @@ body:not(:has(#split-cell[aria-pressed="true"])) .split-help { display: none; }
 .project-bar { display:flex; align-items:center; gap:10px; padding:7px 12px; background:#f6f8fa; border-top:1px solid #cbd3de; font-size:12px; flex-wrap:wrap; }
 .project-bar > span { flex:1; min-width:220px; }
 .project-bar .button { padding:5px 10px; font-size:12px; }
+.project-bar .checkbox-row { margin:0; flex:none; }
+#local-save-note { flex-basis:100%; margin:0; }
+#local-save-note.is-error { color:#9d462b; }
 .recovery-dialog { width:min(760px, calc(100vw - 32px)); max-height:85vh; border:1px solid #9eabba; border-radius:8px; padding:24px; color:#263545; }
 .recovery-dialog::backdrop { background:#18273688; }
 #recovery-list > * { padding:12px 0; border-bottom:1px solid #d9e0e7; }
