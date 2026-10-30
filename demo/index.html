@@ -356,6 +356,8 @@
         <label>Panels<select id="laser-scope"><option value="all">Whole model</option><option value="resolved">Resolved outlines only (incomplete)</option></select></label>
       </div>
       <p class="laser-note">0 mm makes a score centreline (Line mode); a wider groove makes a closed engraving band (Fill mode). Groove width is measured on the small model.</p>
+      <label class="checkbox-row laser-front-guides"><input id="laser-front-guides" type="checkbox" aria-describedby="laser-front-guide-help"><span>Show all hinge guides on cutting side (paper / cardboard)</span></label>
+      <p id="laser-front-guide-help" class="laser-note">Reverse folds appear as green centre lines on the front. Use 0 mm groove width for paper/cardboard line scoring. The green guides mark fold locations; they do not change the plywood groove face.</p>
       <div class="laser-actions"><button id="laser-build" type="button">Prepare sheets</button><button id="laser-coupon" type="button">Hinge test coupon</button><button class="info-button" type="button" popovertarget="laser-info" aria-label="About laser objects and layers"><svg><use href="#i-info"></use></svg></button></div>
       <p id="laser-status" role="status" aria-live="polite">Prepare the sheets to preview them, or start with a plywood hinge coupon.</p>
       <div class="laser-output" id="laser-output" hidden>
@@ -369,7 +371,7 @@
         <button class="info-close" type="button" popovertarget="laser-info" popovertargetaction="hide" aria-label="Close laser information">×</button>
         <h2 id="laser-info-title">What is in the laser SVG?</h2>
         <p><strong>2D vectors in millimetres:</strong> scaled fitted panel outlines, openings, fold guides, panel IDs and matching join labels. The full-thickness carved solids are not used. A valid outline can be used even if its full-size stock solid is unresolved.</p>
-        <p><strong>LightBurn layers:</strong> black cuts, blue fold grooves, red labels, gray alignment references. The coupon adds cyan filled groove bands. Colours separate operations; set their modes, order, power and speed yourself. For two-sided work, engrave the back first, flip, then engrave the front and cut last.</p>
+        <p><strong>LightBurn layers:</strong> black cuts, blue fold grooves, red labels, gray alignment references. The coupon adds cyan filled groove bands. With all hinge guides enabled, green centre lines also mark reverse folds on the front for paper/cardboard. Colours separate operations; set their modes, order, power and speed yourself. For two-sided work, engrave the back first, flip, then engrave the front and cut last.</p>
         <p><strong>Front and back:</strong> fold direction chooses the groove face. Back artwork is mirrored left-to-right about the 400 mm sheet centre. Use a registered flip jig and the same sheet origin. The four gray reference circles keep a common artwork size; disable their laser output. Back files contain no cutting paths. Registration requires a physical test.</p>
         <p><strong>Assembly:</strong> overlap, curvature and sheet size can require separate nets. Match identical seam labels and tape or glue those edges together. Flat geometry does not predict whether plywood will bend without cracking or how material thickness changes the fit.</p>
         <p><strong>Incomplete export:</strong> Whole model requires every fitted outline to be valid. Resolved outlines only deliberately omits failed panels and lists them in the preview.</p>

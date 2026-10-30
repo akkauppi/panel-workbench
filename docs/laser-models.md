@@ -19,10 +19,17 @@ The SVG contains vector paths and stroke lettering, so it requires no label font
 | Black | Net perimeter, openings and cut seams | Through cut, Line |
 | Blue | Fold centreline at width 0, or a closed groove band at positive width | Line for centreline; Fill for band |
 | Cyan, coupon only | 1, 2 and 3 mm closed groove bands | Fill |
+| Green, optional | Reverse-fold centre lines on the cutting face | Paper/cardboard marking or light scoring, Line |
 | Red | Panel IDs, paired join IDs and coupon ruler | Light marking, Line |
 | Gray | Four common registration references | Setup reference; normally disable output |
 
 LightBurn maps imported colours to its palette and operation layers. Confirm the mapping and mode in **Cuts / Layers**, set operation order and assign your tested power, speed and passes. See LightBurn's [colour palette reference](https://docs.lightburnsoftware.com/2.1/Reference/UI/ColorPalette/) and [importing artwork guide](https://docs.lightburnsoftware.com/latest/GetStarted/CreatingAndImportingArtwork/).
+
+## Paper and cardboard
+
+Enable **Show all hinge guides on cutting side (paper / cardboard)** to include every hinge location in the front SVG. Blue marks the ordinary front folds; green marks folds whose plywood groove would belong on the back. Use groove width **0 mm** for line scoring, and set the green layer to marking or light scoring as appropriate for your material. The two colours retain fold-direction information. Front downloads include `-all-hinges` in their filename when this option is enabled.
+
+The green lines are additional guides, always centre lines even when a positive plywood groove width is selected. They do not relocate the plywood grooves or add duplicate cutting paths. The back SVG remains available for the original groove faces. Printed paper templates remain a separate workflow.
 
 ## Front and back
 

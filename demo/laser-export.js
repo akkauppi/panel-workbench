@@ -15,6 +15,7 @@ const number = (value, name, minimum, maximum = 10000) => {
 const LAYERS = {
   cut: { id: 'CUT', name: 'CUT — through cut / Line', color: '#000000', mode: 'Line' },
   groove: { id: 'GROOVE', name: 'GROOVE', color: '#0000FF' },
+  reverseGuide: { id: 'REVERSE_FOLD_GUIDES', name: 'REVERSE FOLD GUIDES — front mark / Line', color: '#00E000', mode: 'Line' },
   band: { id: 'GROOVE_BANDS', name: 'GROOVE BANDS — coupon / Fill', color: '#00E0E0', mode: 'Fill' },
   label: { id: 'LABEL', name: 'LABEL — light mark / Line', color: '#FF0000', mode: 'Line' },
   align: { id: 'ALIGN', name: 'ALIGN — reference only / output off', color: '#B4B4B4', mode: 'Line' },
@@ -183,6 +184,9 @@ export function buildLaserPaths(sheet, options = {}) {
     add(definition, [path]);
   }
   if (side === 'front') {
+    if (options.frontFoldGuides === true) add(LAYERS.reverseGuide, sheet.folds.filter(fold => fold.side === 'back').map(fold => ({
+      ...groovePath(fold, 0, sheet.panels), kind: 'reverse-fold-guide',
+    })));
     if (options.labels !== false) add(LAYERS.label, (sheet.labels || []).flatMap(label => [...(label.leader ? [{ points: label.leader.map(p => [...p]), closed: false, kind: 'label-leader', text: String(label.text), seamId: label.seamId }] : []), ...strokeLabel(label)]));
     add(LAYERS.label, (sheet.guides || []).map(guide => ({ points: guide.points.map(p => [...p]), closed: !!guide.closed, kind: 'scale-guide' })));
     add(LAYERS.cut, cutPaths);
@@ -193,7 +197,8 @@ export function buildLaserPaths(sheet, options = {}) {
   }
   const result = [...layers.values()];
   return { width, height, side, layers: result, legend: result.map(({ id, name, color, mode }) => ({ id, name, color, mode })),
-    instructions: 'Assign tested settings in LightBurn. Keep ALIGN output disabled unless intentionally making and testing a registration fixture. For two-sided work, verify physical registration and engrave the back first. Flip left-to-right about the vertical sheet axis using a calibrated jig, then engrave the front and cut last. Back artwork is mirrored; keep the stock located until final cutting. Centreline grooves use Line mode; closed bands use Fill. Groove bands are inset at their ends to stay inside the panels.' };
+    instructions: 'Assign tested settings in LightBurn. Keep ALIGN output disabled unless intentionally making and testing a registration fixture. For two-sided work, verify physical registration and engrave the back first. Flip left-to-right about the vertical sheet axis using a calibrated jig, then engrave the front and cut last. Back artwork is mirrored; keep the stock located until final cutting. Centreline grooves use Line mode; closed bands use Fill. Groove bands are inset at their ends to stay inside the panels.'
+      + (side === 'front' && options.frontFoldGuides === true ? ' Green reverse-fold guides are front-side centreline marks for folds assigned to the back face; they do not change the back-face engraving.' : '') };
 }
 const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 const format = value => String(Number(value.toFixed(6)));
@@ -201,7 +206,7 @@ export function exportLaserSVG(sheet, options = {}) {
   const drawing = buildLaserPaths(sheet, options), title = options.name ?? (sheet.coupon ? 'Folding test coupons' : `Laser sheet ${(sheet.index ?? 0) + 1}`);
   const pathData = path => path.points.map(([x, y], index) => `${index ? 'L' : 'M'}${format(x)} ${format(drawing.height - y)}`).join(' ') + (path.closed ? ' Z' : '');
   const metadata = { units: 'mm', side: drawing.side, scale: options.scale ?? sheet.scale ?? null, engravingWidth: options.engravingWidth ?? options.hingeWidth ?? 0,
-    legend: drawing.legend, instructions: drawing.instructions, incomplete: !!options.excludedPanelIds?.length, excludedPanelIds: options.excludedPanelIds ?? [] };
+    frontFoldGuides: options.frontFoldGuides === true, legend: drawing.legend, instructions: drawing.instructions, incomplete: !!options.excludedPanelIds?.length, excludedPanelIds: options.excludedPanelIds ?? [] };
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="${format(drawing.width)}mm" height="${format(drawing.height)}mm" viewBox="0 0 ${format(drawing.width)} ${format(drawing.height)}">\n<title>${xml(title)}</title>\n<desc>${xml(drawing.instructions)}</desc>\n<metadata>${xml(JSON.stringify(metadata))}</metadata>\n${drawing.layers.map(layer => `<g id="${layer.id}" inkscape:groupmode="layer" inkscape:label="${xml(layer.name)}" stroke="${layer.color}" fill="none" stroke-width="0.1" stroke-linecap="round" stroke-linejoin="round">\n${layer.paths.map(path => `<path data-kind="${path.kind}"${path.seamId ? ` data-seam="${xml(path.seamId)}"` : ''}${path.text ? ` data-label="${xml(path.text)}"` : ''} d="${pathData(path)}"/>`).join('\n')}\n</g>`).join('\n')}\n</svg>\n`;
 }
 

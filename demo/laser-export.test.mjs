@@ -14,6 +14,13 @@ function wings(side = 'front') {
     folds: [{ a: [50, 20], b: [50, 60], panelIds: [0, 1], seamId: 'E004', side, angleDegrees: 70 }],
     labels: [{ text: 'P001', position: [30, 40], height: 2.5 }, { text: 'P002', position: [70, 40], height: 2.5 }] };
 }
+function mixedWings() {
+  const sheet = wings();
+  sheet.panels.push(panel(2, 90, 20, 40, 40));
+  sheet.cuts = segments([[10, 20], [50, 20], [90, 20], [130, 20], [130, 60], [90, 60], [50, 60], [10, 60]]);
+  sheet.folds.push({ a: [90, 20], b: [90, 60], panelIds: [1, 2], seamId: 'E005', side: 'back', angleDegrees: 70 });
+  return sheet;
+}
 const layer = (drawing, id) => drawing.layers.find(layer => layer.id === id);
 const length = path => path.points.reduce((sum, p, i, a) => sum + (i ? Math.hypot(p[0] - a[i - 1][0], p[1] - a[i - 1][1]) : 0), 0)
   + (path.closed ? Math.hypot(path.points[0][0] - path.points.at(-1)[0], path.points[0][1] - path.points.at(-1)[1]) : 0);
@@ -71,6 +78,48 @@ test('back export mirrors around the complete sheet and contains only back groov
   assert.equal(layer(front, 'GROOVE'), undefined);
   assert.deepEqual(bounds(layer(front, 'ALIGN').paths), [4, 4, 296, 246]);
   assert.deepEqual(bounds(layer(drawing, 'ALIGN').paths), [4, 4, 296, 246]);
+});
+
+test('optional front guides add each reverse fold once without duplicating front folds or changing cuts', () => {
+  const sheet = mixedWings(), original = structuredClone(sheet), before = buildLaserPaths(sheet);
+  assert.equal(layer(before, 'REVERSE_FOLD_GUIDES'), undefined);
+  assert.deepEqual(buildLaserPaths(sheet, { frontFoldGuides: false }), before);
+  const drawing = buildLaserPaths(sheet, { frontFoldGuides: true }), guides = layer(drawing, 'REVERSE_FOLD_GUIDES');
+  assert.equal(guides.color, '#00E000'); assert.equal(guides.mode, 'Line');
+  assert.equal(guides.paths.length, 1); assert.equal(guides.paths[0].seamId, 'E005');
+  assert.deepEqual(guides.paths[0].points, [[90, 20], [90, 60]]);
+  for (const id of ['GROOVE', 'CUT', 'LABEL', 'ALIGN']) assert.deepEqual(layer(drawing, id), layer(before, id));
+  assert.deepEqual(sheet, original);
+  assert.deepEqual(buildLaserPaths(wings(), { frontFoldGuides: true }).layers, buildLaserPaths(wings()).layers);
+});
+
+test('reverse front guides stay centrelines even with a positive global or per-fold engraving width', () => {
+  const sheet = mixedWings(); sheet.folds[1].engravingWidth = 6;
+  const drawing = buildLaserPaths(sheet, { frontFoldGuides: true, engravingWidth: 2 });
+  const frontGroove = layer(drawing, 'GROOVE').paths[0], reverse = layer(drawing, 'REVERSE_FOLD_GUIDES').paths[0];
+  assert.equal(frontGroove.closed, true); assert.equal(frontGroove.engravingWidth, 2);
+  assert.equal(reverse.closed, false); assert.equal(reverse.kind, 'reverse-fold-guide');
+  assert.equal(reverse.points.length, 2); assert.equal(length(reverse), 40);
+  assert.equal(reverse.engravingWidth, undefined); assert.equal(reverse.endInset, undefined);
+  const backOptions = { side: 'back', engravingWidth: 2 };
+  const back = buildLaserPaths(sheet, { ...backOptions, frontFoldGuides: true });
+  assert.deepEqual(back.layers, buildLaserPaths(sheet, backOptions).layers);
+  assert.equal(layer(back, 'REVERSE_FOLD_GUIDES'), undefined);
+  assert.equal(layer(back, 'GROOVE').paths[0].engravingWidth, 6);
+  assert.equal(layer(back, 'CUT'), undefined); assert.equal(layer(back, 'LABEL'), undefined);
+});
+
+test('SVG records front-guide choice and exports the distinct green line only on the front face', () => {
+  const sheet = mixedWings(), svg = exportLaserSVG(sheet, { frontFoldGuides: true });
+  assert.match(svg, /&quot;frontFoldGuides&quot;:true/);
+  assert.match(svg, /id="REVERSE_FOLD_GUIDES"[^>]*stroke="#00E000"/);
+  assert.match(svg, /data-kind="reverse-fold-guide" data-seam="E005" d="M90 380 L90 340"/);
+  assert.equal((svg.match(/data-kind="reverse-fold-guide"/g) || []).length, 1);
+  assert.match(svg, /front-side centreline marks for folds assigned to the back face/);
+  assert.match(exportLaserSVG(sheet), /&quot;frontFoldGuides&quot;:false/);
+  const back = exportLaserSVG(sheet, { side: 'back', frontFoldGuides: true });
+  assert.match(back, /&quot;frontFoldGuides&quot;:true/);
+  assert.doesNotMatch(back, /id="REVERSE_FOLD_GUIDES"|data-kind="reverse-fold-guide"/);
 });
 
 test('registration uses four small reference circles, with no bed frame in the cut operation', () => {

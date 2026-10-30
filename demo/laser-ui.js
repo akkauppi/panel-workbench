@@ -6,7 +6,7 @@ export function initLaserUI({ download }) {
   let current = { ready: false, result: null }, prepared = null, svg = null, previewURL = null;
   let worker = null, sequence = 0, busy = false, settingsKey = null;
   const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-  const key = () => ['laser-scale', 'laser-margin', 'laser-groove', 'laser-scope'].map(id => $(id).value).join('|');
+  const key = () => ['laser-scale', 'laser-margin', 'laser-groove', 'laser-scope', 'laser-front-guides'].map(id => $(id).type === 'checkbox' ? $(id).checked : $(id).value).join('|');
   const status = (message, error = false) => { $('laser-status').textContent = message; $('laser-status').classList.toggle('is-error', error); };
   function availability() {
     $('laser-build').disabled = !current.ready || busy;
@@ -23,7 +23,7 @@ export function initLaserUI({ download }) {
     if (!Number.isFinite(scale) || scale < 1 || scale > 10000) throw new Error('Choose a scale denominator from 1 to 10000.');
     if (!Number.isFinite(margin) || margin < 5 || margin > 100) throw new Error('Choose a sheet margin from 5 to 100 mm.');
     if (!Number.isFinite(engravingWidth) || engravingWidth < 0 || engravingWidth > 10) throw new Error('Choose a fold groove width from 0 to 10 mm.');
-    return { scale, width: 400, height: 400, margin, engravingWidth, allowPartial: $('laser-scope').value === 'resolved', outwardCenter: current.center, flipDirection: current.flipDirection };
+    return { scale, width: 400, height: 400, margin, engravingWidth, frontFoldGuides: $('laser-front-guides').checked, allowPartial: $('laser-scope').value === 'resolved', outwardCenter: current.center, flipDirection: current.flipDirection };
   }
   function renderSheet() {
     svg = null;
@@ -47,9 +47,10 @@ export function initLaserUI({ download }) {
         const li = document.createElement('li'); li.style.borderColor = layer.color; li.textContent = layer.name; return li;
       }));
       const folds = sheet.folds.filter(fold => fold.side === side);
+      const reverseGuides = prepared.options.frontFoldGuides ? sheet.folds.filter(fold => fold.side === 'back').length : 0;
       $('laser-sheet-note').textContent = side === 'back'
         ? `${folds.length} back fold guides. Mirror is already applied. Register the sheet with a flip jig; disable gray alignment output. No cutting paths on this face.`
-        : `${count(sheet.panels.length, 'panel')} · ${count(folds.length, 'front fold guide')}. ${hasBack ? 'This sheet needs back engraving first; flip, then engrave the front and cut last.' : 'Engrave this face before cutting.'} Disable gray alignment output. Check the imported dimensions in LightBurn.`;
+        : `${count(sheet.panels.length, 'panel')} · ${count(folds.length, 'front fold guide')}${reverseGuides ? ` + ${count(reverseGuides, 'green reverse-fold guide')}` : ''}. ${reverseGuides ? 'All hinge locations are marked on this face. Paper/cardboard can use light line scoring; plywood still needs the groove on its specified face.' : hasBack ? 'This sheet needs back engraving first; flip, then engrave the front and cut last.' : 'Engrave this face before cutting.'} Disable gray alignment output. Check the imported dimensions in LightBurn.`;
       $('laser-output').hidden = false;
       status(prepared.summary);
     } catch (error) { $('laser-output').hidden = true; status(`SVG not ready: ${error.message}`, true); }
@@ -93,7 +94,7 @@ export function initLaserUI({ download }) {
         summary: 'Hinge coupon · 0, 1, 2 and 3 mm groove widths · 50 mm scale check. Blue uses Line mode; cyan uses Fill mode. Tune laser settings on scrap plywood first.' });
     } catch (error) { status(`Coupon not ready: ${error.message}`, true); availability(); }
   });
-  for (const id of ['laser-scale', 'laser-margin', 'laser-groove', 'laser-scope']) $(id).addEventListener('input', () => {
+  for (const id of ['laser-scale', 'laser-margin', 'laser-groove', 'laser-scope', 'laser-front-guides']) $(id).addEventListener('input', () => {
     if (prepared?.kind !== 'coupon' || busy) invalidate('Settings changed. Prepare sheets again before downloading.');
   });
   for (const id of ['laser-sheet', 'laser-side']) $(id).addEventListener('change', renderSheet);
@@ -102,7 +103,8 @@ export function initLaserUI({ download }) {
     const sheet = Number($('laser-sheet').value) + 1, side = $('laser-side').value;
     const name = prepared.name.replace(/[^\p{L}\p{N}._-]+/gu, '-');
     const incomplete = prepared.options.excludedPanelIds?.length ? '-partial' : '';
-    download(`${name}${incomplete}-${prepared.kind === 'coupon' ? 'test' : `laser-1to${prepared.options.scale}`}-sheet${sheet}-${side}.svg`, svg, 'image/svg+xml');
+    const guideSuffix = side === 'front' && prepared.options.frontFoldGuides ? '-all-hinges' : '';
+    download(`${name}${incomplete}-${prepared.kind === 'coupon' ? 'test' : `laser-1to${prepared.options.scale}`}-sheet${sheet}-${side}${guideSuffix}.svg`, svg, 'image/svg+xml');
   });
   return {
     update(next) {

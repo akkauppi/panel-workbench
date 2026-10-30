@@ -16,7 +16,7 @@ Select one cell and choose **Divide cell**. Drag a line inside it to set a divid
 
 ## Laser scale models
 
-**Export → Laser scale model** prepares connected nets on 400 × 400 mm sheets, with separate cut, fold-groove and label colours for LightBurn. Preview and download each sheet and face as SVG. A hinge coupon compares four groove widths. Start with a physical plywood test; laser settings and material bending are not simulated. Read the [laser model workflow](docs/laser-models.md) for layers, front/back registration and incomplete exports.
+**Export → Laser scale model** prepares connected nets on 400 × 400 mm sheets, with separate cut, fold-groove and label colours for LightBurn. Preview and download each sheet and face as SVG. For paper/cardboard, enable all hinge guides on the cutting side; reverse folds use a separate green layer. A hinge coupon compares four groove widths. Start with a physical plywood test; laser settings and material bending are not simulated. Read the [laser model workflow](docs/laser-models.md) for layers, front/back registration and incomplete exports.
 
 ## Develop locally
 
