@@ -369,3 +369,22 @@ body:not(:has(#split-cell[aria-pressed="true"])) .split-help { display: none; }
 .panel-offset-controls .control-hint { margin: 8px 0 0; }
 .properties-scroll > .reset-offsets { margin: 10px 12px 0; font-size: 11px; }
 #offset-change-note { margin: 10px 12px; padding: 8px; background: #fff3dc; color: #745017; }
+.workflow-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid #9eabb9; background: #f6f8fa; color: #294057; padding: 20px; }
+.workflow-dialog::backdrop { background: #1c2b3e55; }
+.workflow-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.workflow-dialog h2 { margin: 0; font-size: 18px; }
+.workflow-dialog p { line-height: 1.5; }
+.workflow-dialog > label { display: block; margin: 12px 0 5px; }
+.workflow-dialog textarea { width: 100%; resize: vertical; font: inherit; padding: 8px; border: 1px solid var(--line); }
+.workflow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.workflow-actions input { min-width: 100px; flex: 1; padding: 6px; border: 1px solid var(--line); }
+.workflow-checkpoint { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.workflow-checkpoint p { margin: 5px 0; }
+.workflow-fields { padding: 10px 12px; }
+.workflow-fields > label { display: grid; grid-template-columns: 1fr 86px; align-items: center; gap: 5px; margin: 8px 0; }
+.workflow-fields input { min-width: 0; width: 100%; border: 1px solid var(--line); padding: 5px; }
+.workflow-notice, .workflow-inspection { padding: 10px; margin: 10px; border: 1px solid #c7d2df; background: #eef4fa; }
+.workflow-notice p, .workflow-inspection p { margin: 6px 0; }
+.workflow-inspection > input[type="range"] { width: 100%; }
+.workflow-unlock { margin: 0 10px 8px; }
+#feedback-preview { max-height: 260px; max-width: 100%; margin-top: 10px; border: 1px solid var(--line); }

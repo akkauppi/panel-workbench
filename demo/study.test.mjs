@@ -53,7 +53,7 @@ test('saved corner and merged designs round trip with independent source, edits,
 test('undo snapshots retain source layout and design inputs without fitted geometry or model copies', () => {
   const state = { ...fixture(), cells: [{ id: 2 }], selected: 2, history: [] };
   const snapshot = captureDesign(state);
-  assert.deepEqual(Object.keys(snapshot).sort(), ['seeds', 'mergeGroups', 'cornerEdits', 'layout', 'directBase', 'pattern', 'generatorPolicy', 'panelOffsets', 'size', 'variation', 'randomSeed', 'straightness', 'thickness', 'roundover', 'carve', 'minimumThickness', 'flipOutside'].sort());
+  assert.deepEqual(Object.keys(snapshot).sort(), ['seeds', 'mergeGroups', 'cornerEdits', 'layout', 'directBase', 'pattern', 'generatorPolicy', 'panelOffsets', 'projectLimits', 'protectedCellIds', 'size', 'variation', 'randomSeed', 'straightness', 'thickness', 'roundover', 'carve', 'minimumThickness', 'flipOutside'].sort());
   state.mergeGroups[0].members.push(9); state.seeds[0].position[0] = 500; state.thickness = 70;
   state.cornerEdits[0].target[0] = 600; state.cornerEdits[0].owners[0].push(9);
   assert.deepEqual(snapshot.mergeGroups, [{ id: 2, members: [2, 7] }]);

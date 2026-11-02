@@ -26,6 +26,20 @@ collision test.
 
 Read [From a shell to buildable panels](docs/how-panels-are-fitted.md) for an illustrated explanation of the algorithm, why neighbouring flat parts must be solved together, and what makes some arrangements difficult.
 
+## Project review and handoff
+
+Inspect a failed joint with its neighbours and an optional cutaway. Save named
+checkpoints from **File → Checkpoints**, compare alternatives visually, or restore
+one as an undoable edit. Project fabrication limits in Properties flag stock size,
+short edges and shell deviation without replacing the geometry checks. **Lock edits**
+protects source cells from direct changes; fitted parts can still respond to neighbours.
+
+**Export → Handoff package** downloads matching study and Rhino 6 files, a panel
+schedule, file hashes and a change list. **Report an issue** adds your explanation
+to the diagnostics; screenshots and study attachments are optional. Nothing is
+uploaded. Read the [illustrated project review guide](docs/project-review-workflow.md)
+for the controls, saved-file compatibility and production-review limits.
+
 ## Panel offsets
 
 Select one panel and choose **Offset panel** to raise or recess its plane. Drag
@@ -116,6 +130,11 @@ npm run build:pages
 The optional browserless interaction suite needs jsdom. Install it separately and run `JSDOM_MODULE=/path/to/jsdom/lib/api.js npm run test:ui`. That suite mocks rendering; it does not verify actual WebGL appearance or hardware frame rate.
 
 Real Chromium checks are available in `scripts/check-project-browser.cjs` (editing, downloads and recovery), `scripts/check-local-save-browser.cjs` (automatic resume, opt-out and leave-page warnings), `scripts/check-recovery-browser.cjs` (large snapshots and storage transactions), and `scripts/check-explode-browser.cjs` (exploded view, guides and matching downloads). They use an optional Playwright installation; see each script header for environment variables. Use `PANEL_BROWSER_URL` with the project check to test the packaged or deployed site.
+
+`scripts/check-workflow-browser.cjs` checks project limits, edit locks, joint
+inspection, checkpoint comparison and restore, Rhino handoff ZIP contents and
+hashes, optional feedback attachments, and dialog layout. Pass the site URL as
+its first argument and `PANEL_EXPECTED_BUILD` to verify a particular release.
 
 `scripts/check-curvature-browser.cjs` exercises adaptive Regularized generation,
 staged controls, history, saved projects, local resume and rejected ranges on a

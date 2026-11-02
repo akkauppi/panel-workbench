@@ -12,6 +12,8 @@ const files = [
   'demo/index.html', 'demo/style.css', 'demo/app.js', 'demo/examples.js', 'demo/local-examples.js',
   'demo/io.js', 'demo/geometry.js', 'demo/fitted.js', 'demo/solids.js', 'demo/rendering.js',
   'demo/assembly-guides.js', 'demo/explode.js', 'demo/panel-offsets.js', 'demo/panel-diagnostics.js', 'demo/generator-policy.js', 'demo/curvature-sizing.js', 'demo/local-save-preference.js', 'demo/project-document.js', 'demo/project-feedback.js', 'demo/project-recovery.js', 'demo/project-ui.js',
+  'demo/checkpoints.js', 'demo/project-limits.js', 'demo/edit-locks.js', 'demo/joint-inspection.js',
+  'demo/download-package.js', 'demo/handoff-record.js', 'demo/handoff.js', 'demo/feedback-bundle.js',
   'demo/carving.js', 'demo/corner-drag.js', 'demo/study.js', 'demo/design.js',
   'demo/layout.js', 'demo/layout-edit.js', 'demo/pattern.js', 'demo/structured.js', 'demo/regularized.js', 'demo/quality.js', 'demo/worker.js',
   'demo/laser-net.js', 'demo/laser-export.js', 'demo/laser-ui.js', 'demo/laser-worker.js',

@@ -2,6 +2,10 @@ import { readLayout, layoutRecipe, nextLayoutCellId } from './layout.js';
 import { readPattern } from './pattern.js';
 import { readGeneratorPolicy } from './generator-policy.js';
 import { readPanelOffsets } from './panel-offsets.js';
+import { readProjectLimits, hasProjectLimits } from './project-limits.js';
+import { readProtectedCellIds } from './edit-locks.js';
+import { readCheckpoints } from './checkpoints.js';
+import { readLastHandoff } from './handoff-record.js';
 import { STUDY_VERSION, CURRENT_ENGINES, assertStudySize, utf8Bytes, createProjectMetadata,
   readProjectMetadata, readProducer, readEngines, requiredStudyFeatures, readRequiredFeatures, readCalculationMetadata } from './project-document.js';
 import { readCalculationSummary } from './project-feedback.js';
@@ -43,6 +47,8 @@ export function captureDesign(state) {
   // Explicit empty arrays let Undo clear offsets; transport omits empty values
   // so all earlier no-offset studies retain their exact serialized fields.
   result.panelOffsets = readPanelOffsets(state.panelOffsets);
+  result.projectLimits = readProjectLimits(state.projectLimits);
+  result.protectedCellIds = readProtectedCellIds(state.protectedCellIds);
   for (const key of ['layout', 'directBase']) {
     const layout = state[key] ?? null;
     result[key] = layout && immutableLayouts.has(layout) ? layout : structuredClone(layout);
@@ -167,6 +173,8 @@ export function readStudy(input) {
   if (generatorPolicy && study.version < 6) throw new Error('Curvature sizing requires study file version 6 and its required-feature declaration. Keep the original file unchanged.');
   const panelOffsets = readPanelOffsets(study.panelOffsets);
   if (panelOffsets.length && study.version < 6) throw new Error('Panel offsets require study file version 6 and their required-feature declaration. Keep the original file unchanged.');
+  const projectLimits = readProjectLimits(study.projectLimits), protectedCellIds = readProtectedCellIds(study.protectedCellIds);
+  if (study.version < 6 && (hasProjectLimits(projectLimits) || protectedCellIds.length || study.checkpoints?.length || study.lastHandoff != null)) throw new Error('Project limits, edit locks, checkpoints and handoff history require study file version 6 and their required-feature declarations. Keep the original file unchanged.');
   const view = study.view ?? 'surface';
   if (!['surface', 'flat', 'solid', 'reference'].includes(view)) throw new Error('The study contains an invalid view.');
   if (study.name !== undefined && typeof study.name !== 'string') throw new Error('The study contains an invalid name.');
@@ -178,6 +186,8 @@ export function readStudy(input) {
     seeds, mergeGroups, cornerEdits, pattern,
     ...(generatorPolicy ? { generatorPolicy } : {}),
     ...(panelOffsets.length ? { panelOffsets } : {}),
+    ...(hasProjectLimits(projectLimits) ? { projectLimits } : {}),
+    ...(protectedCellIds.length ? { protectedCellIds } : {}),
     size: number(study.size, undefined, Number.MIN_VALUE, Infinity, 'cell size'),
     variation: number(study.variation, undefined, 0, 1, 'variation'), randomSeed,
     straightness: number(study.straightness, .7, 0, 1, 'border straightness'),
@@ -193,6 +203,10 @@ export function readStudy(input) {
   if (panelOffsets.length) {
     if (!result.layout) throw new Error('Panel offsets need their saved source layout. Keep the original project file unchanged.');
     readPanelOffsets(panelOffsets, result.layout.cells);
+  }
+  if (protectedCellIds.length) {
+    if (!result.layout) throw new Error('Edit locks need their saved source layout. Keep the original study unchanged.');
+    readProtectedCellIds(protectedCellIds, result.layout.cells);
   }
   if (result.pattern.type !== 'organic' && result.cornerEdits.length) {
     throw new Error('This layout pattern cannot use legacy corner targets.');
@@ -220,11 +234,20 @@ export function readStudy(input) {
     result.engines = readEngines(study.engines);
     result.requiredFeatures = readRequiredFeatures(study.requiredFeatures, result);
     if (study.lastCalculation !== undefined) result.lastCalculation = readCalculationMetadata(study.lastCalculation, result.project, readCalculationSummary);
+    const lastHandoff = readLastHandoff(study.lastHandoff, result.project);
+    if (lastHandoff) result.lastHandoff = lastHandoff;
   }
   if (study.camera !== undefined || study.target !== undefined) {
     if (!isPoint(study.camera) || !isPoint(study.target)) throw new Error('The study contains an invalid camera position.');
     result.camera = [...study.camera]; result.target = [...study.target];
   }
+  if (study.checkpoints !== undefined) {
+    const checkpoints = readCheckpoints(study.checkpoints, result, readStudy);
+    if (checkpoints.length) result.checkpoints = checkpoints;
+  }
+  // Recheck after optional document metadata was canonicalized. A checkpoint
+  // or handoff must never disappear from a subsequent read/save cycle.
+  if (study.version === STUDY_VERSION) result.requiredFeatures = readRequiredFeatures(study.requiredFeatures, result);
   return result;
 }
 
@@ -239,6 +262,8 @@ export function createStudy(state, { units, up, camera, target, project, produce
     producer: producer ?? state.producer ?? { name: 'Panel Workbench', build: 'Local development' },
     engines: engines ?? state.engines ?? CURRENT_ENGINES,
     ...(lastCalculation !== undefined ? { lastCalculation } : {}),
+    ...(state.checkpoints?.length ? { checkpoints: state.checkpoints } : {}),
+    ...(state.lastHandoff != null ? { lastHandoff: state.lastHandoff } : {}),
   };
   study.requiredFeatures = requiredStudyFeatures(study);
   return readStudy(study);

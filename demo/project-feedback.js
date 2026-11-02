@@ -1,4 +1,6 @@
 import { readPanelOffsets } from './panel-offsets.js';
+import { readProjectLimits, hasProjectLimits } from './project-limits.js';
+import { readProtectedCellIds } from './edit-locks.js';
 
 // Bounded, geometry-free calculation evidence. Fingerprints detect changes;
 // they are not cryptographic identities or a substitute for geometric checks.
@@ -189,7 +191,7 @@ function boundedIds(values) {
   return [...new Set((Array.isArray(values) ? values : []).filter(idOK))].sort((a, b) => a - b).slice(0, MAX_PANELS);
 }
 
-const editTypes = new Set(['move-corner', 'move-cell', 'offset-panel', 'reset-panel-offset', 'reset-panel-offsets', 'split-cell', 'merge-cells', 'delete-cell', 'remove-cell', 'add-cell', 'restore-cell', 'reset-corners', 'reset-layout', 'new-arrangement', 'settings', 'update-settings', 'units', 'orientation', 'import', 'open', 'undo', 'redo', 'edit', 'history', 'preference', 'reserve-panel-id']);
+const editTypes = new Set(['move-corner', 'move-cell', 'offset-panel', 'reset-panel-offset', 'reset-panel-offsets', 'split-cell', 'merge-cells', 'delete-cell', 'remove-cell', 'add-cell', 'restore-cell', 'reset-corners', 'reset-layout', 'new-arrangement', 'settings', 'update-settings', 'units', 'orientation', 'import', 'open', 'undo', 'redo', 'edit', 'history', 'preference', 'reserve-panel-id', 'create-checkpoint', 'delete-checkpoint']);
 function eventSummary(event) {
   if (!event || typeof event !== 'object') return null;
   const result = { type: editTypes.has(event.type) ? event.type : 'other' };
@@ -223,6 +225,8 @@ function safeSettings(settings) {
     const offsets = readPanelOffsets(settings?.panelOffsets);
     if (offsets.length) result.panelOffsets = offsets.slice(0, MAX_PANELS);
   } catch { /* Malformed context cannot introduce arbitrary fields or strings. */ }
+  try { if (hasProjectLimits(settings?.projectLimits)) result.projectLimits = readProjectLimits(settings.projectLimits); } catch { /* Unknown preferences are not shared. */ }
+  try { const ids = readProtectedCellIds(settings?.protectedCellIds); if (ids.length) result.protectedCellIds = ids.slice(0, MAX_PANELS); } catch { /* Only validated panel numbers are shared. */ }
   return result;
 }
 

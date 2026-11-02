@@ -221,18 +221,22 @@ private geometry is included in the repository.
 
 The durable-project update integrates saving and recovery of accepted source
 work, v6 document provenance, saved/current calculation comparison, displacement
-feedback and locally downloaded diagnostics. Its release gates must verify those
-behaviors together. These are workflow improvements; the fitting algorithm and
-the geometry-library proposals remain separate work.
+feedback and locally downloaded diagnostics. The production-review update adds
+named checkpoints, local joint inspection, project limits, source-edit locks,
+optional issue attachments and a complete Rhino handoff package. Read the
+illustrated [review and handoff guide](project-review-workflow.md) for those
+controls and their limits. Release gates must verify these behaviors together.
+These are workflow improvements; the fitting algorithm and geometry-library
+proposals remain separate work.
 
 | Priority | Next capability | Acceptance checkpoint |
 | --- | --- | --- |
 | Release gate | Save accepted source work independently of fitting, with explicit recovery | A failed/stale calculation cannot erase accepted edits; interrupted work can be restored; an offered save can be reopened |
-| 2 | Explain failures at the affected seam and its neighboring panels | The short-edge regression identifies the shared cause without suggesting unrelated edits |
-| Release gate / extend | Show source-to-fitted displacement and boundary movement in the view | The designer can distinguish intentional faceting from excess drift and compare before/after edits; detailed seam-level localization remains planned |
+| Release gate / extend | Inspect a problem panel with its neighbours and available problem locations | Measured locations receive markers; a panel-level or regional diagnosis is stated honestly when no exact seam is known |
+| Release gate / extend | Show source-to-fitted displacement and boundary movement in the view | The designer can distinguish intentional faceting from excess drift and compare named alternatives using the current solver |
 | 4 | Preview centre moves and show pending/rejected edit feedback | A local preview never becomes saved authority before source validation; late worker replies cannot replace newer input |
 | 5 | Improve coupled fitting using bounded, independently validated trials | No new invalid panels in controls; source coverage, opening constraints, edge order and stock checks remain enforced |
-| 6 | Extend the Rhino handoff manifest | Project ID/revision/build linkage is implemented; a fuller manifest would add settings, fingerprints and calculation validity |
+| Release gate | Keep the editable study, exact Rhino file, schedule and manifest together | All files describe one captured revision; hashes match the package; the next export can identify changed, added and removed panel IDs |
 
 These rows describe acceptance goals, not a claim that every interaction or
 external workflow is already implemented. Code-level tests, browser checks and
@@ -324,13 +328,19 @@ fields are not copied; malformed identities, revisions and build strings are
 rejected. This is implemented metadata linkage, not a claim of native Rhino UI
 verification.
 
-A fuller document-level manifest with application/solver versions, units,
-settings, panel IDs/fingerprints and calculation validity remains planned. The
-matching study JSON is still needed to resume source editing; the 3DM metadata
-does not embed that document. See [the Rhino workflow](rhino-workflow.md) for the
-exact user-text keys.
+The handoff ZIP adds a separate manifest with application/solver versions,
+units, settings, panel IDs/fingerprints, calculation validity, project warnings
+and SHA-256 hashes of its payload files. It bundles the matching study JSON,
+exact Rhino 6 file and panel schedule for one captured revision. Its saved export
+history supports the next handoff's changed/added/removed comparison. Hashes
+identify files; they do not authenticate approval or replace production checks.
+See [the review and handoff guide](project-review-workflow.md) for the contents.
+
+The study JSON is still needed to resume source editing; the 3DM metadata does
+not embed that document. See [the Rhino workflow](rhino-workflow.md) for the exact
+user-text keys.
 
 Editing an outline within a Rhino block updates that curve in both instances,
 but does not regenerate its mesh or carving. Exporting again does not patch an
-already edited Rhino document. Preserve that distinction in any future manifest
-or bidirectional workflow.
+already edited Rhino document. Keep manual Rhino changes as distinct downstream
+revisions; the package does not introduce a bidirectional editing workflow.

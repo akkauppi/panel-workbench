@@ -2060,11 +2060,16 @@ console.log('PASS Escape clears selection and all editing modes without changing
 
 // Centre previews currently edit seed positions while a debounced fit may be
 // running. Cancellation must restore both the source intent and derived views.
-for (const phase of ['before debounce', 'in flight']) {
+const { summarizeCalculation: summarizeRestoredCalculation } = await import(new URL('project-feedback.js', demo).href);
+for (const phase of ['before debounce', 'in flight', 'after preview']) {
   await openStudy(cornerStudy, `centre cancellation ${phase}`);
+  input('limit-stock-width', 100); input('limit-stock-height', 100); clickControl('apply-project-limits');
+  assert.equal($('project-limit-list').children.length, state.cells.length, 'the fixture has visible project warnings before dragging');
   if (!state.edit) clickControl('edit-toggle');
   flush();
   const before = currentDesign(), beforeCells = structuredClone(state.cells), beforeResult = structuredClone(state.result);
+  const resultReference = state.result, beforeCalculation = structuredClone(state.lastCalculation), beforeComparison = structuredClone(state.comparison);
+  const beforeCalculationText = $('calculation-comparison').textContent, beforeLimitText = $('project-limit-list').textContent;
   const history = structuredClone(state.history), future = structuredClone(state.future);
   const camera = window.cellStudy.camera.position.toArray(), target = window.cellStudy.controls.target.toArray();
   const seed = state.seeds[0], screen = window.cellStudy.projectSeed(seed.id), heldCount = heldFitReplies.length;
@@ -2074,6 +2079,7 @@ for (const phase of ['before debounce', 'in flight']) {
   pointer(canvas, 'pointermove', screen.x + 12, screen.y + 6);
   assert.notDeepEqual(currentDesign().seeds, before.seeds, 'the test must move a real centre before cancellation');
   if (phase === 'in flight') await until(() => heldFitReplies.length > heldCount, 'hold centre-drag fitting result');
+  if (phase === 'after preview') await until(() => state.result !== resultReference && state.solved && !state.busy && !state.pending, 'centre preview calculation completes before Escape');
   escape(); assertNeutralTools(`centre Escape ${phase}`);
   assert.deepEqual(currentDesign(), before, 'Escape immediately restores the accepted centre arrangement');
   const cancelledRequest = state.requested;
@@ -2092,6 +2098,11 @@ for (const phase of ['before debounce', 'in flight']) {
   assert.deepEqual(currentDesign(), before);
   assert.deepEqual(state.cells, beforeCells, 'cancelled centre restores the fitted panels');
   assert.deepEqual(state.result, beforeResult, 'cancelled centre restores the complete solid/carving result');
+  assert.deepEqual(state.lastCalculation, beforeCalculation, 'cancelled centre restores the accepted calculation evidence');
+  assert.deepEqual(state.lastCalculation.summary, summarizeRestoredCalculation(state.result), 'saved calculation evidence matches the restored geometry');
+  assert.deepEqual(state.comparison, beforeComparison, 'cancelled centre restores the previous calculation comparison');
+  assert.equal($('calculation-comparison').textContent, beforeCalculationText, 'cancelled centre restores the comparison explanation');
+  assert.equal($('project-limit-list').textContent, beforeLimitText, 'cancelled centre restores the accepted project warnings');
   assert.deepEqual(state.history, history, 'cancelled centre movement creates no undo entry');
   assert.deepEqual(state.future, future, 'cancelled centre movement preserves redo history');
   assert.deepEqual(window.cellStudy.camera.position.toArray(), camera);
@@ -2363,6 +2374,46 @@ assert.ok(state.cells.length > 0); assert.equal(state.ready, true);
 assert.deepEqual(state.layout, durableLayout, 'reset keeps the accepted source layout');
 console.log('PASS terminal fitting feedback and resetting an opened offset study without fitted panels');
 
+// An imported mesh can fail before it has any source-cell layout to save.
+// That terminal failure must not trap the designer in the failed document.
+async function failInitialMeshImport(name) {
+  failNextFitReply = true;
+  loadFile('mesh-file', { name: `${name}.obj`, size: obj.length, text: async () => obj });
+  await until(() => state.name === name && !failNextFitReply && !state.busy && !state.pending, 'initial mesh tessellation fails before producing a layout');
+  assert.equal(state.layout, null); assert.equal(state.ready, false); assert.equal(state.solved, false);
+  assert.equal(state.cells.length, 0); assert.equal($('save-study').disabled, true);
+  assert.match($('status').textContent, /no cells could be created|no cell layout/i);
+}
+await failInitialMeshImport('untouched-initial-tessellation-failure');
+const untouchedFailedProject = state.project.id;
+$('example-select').value = DEFAULT_EXAMPLE_ID; clickControl('load-example');
+await until(() => state.project.id !== untouchedFailedProject && state.solved, 'replace untouched failed import with another example');
+assert.ok(state.cells.length > 0, 'the replacement example creates its panels');
+
+await failInitialMeshImport('edited-initial-tessellation-failure');
+failNextFitReply = true;
+input('thickness', state.thickness + 5); input('thickness', state.thickness, 'change');
+await until(() => !failNextFitReply && !state.busy && !state.pending, 'material edit also fails to create the first layout');
+assert.equal(state.layout, null); assert.ok(state.history.length > 0); assert.ok(state.project.revision > 1);
+const editedFailedDesign = currentDesign(), editedFailedProject = structuredClone(state.project), editedFailedHistory = structuredClone(state.history);
+const originalConfirm = window.confirm, failureConfirmations = [];
+try {
+  window.confirm = message => { failureConfirmations.push(message); return false; };
+  $('example-select').value = DEFAULT_EXAMPLE_ID; clickControl('load-example');
+  await until(() => failureConfirmations.length === 1, 'ask before discarding settings on a failed initial import');
+  await Promise.resolve(); await Promise.resolve();
+  assert.match(failureConfirmations[0], /no cell layout.*discard.*settings/is);
+  assert.deepEqual(currentDesign(), editedFailedDesign, 'cancelling replacement keeps every changed setting');
+  assert.deepEqual(state.project, editedFailedProject); assert.deepEqual(state.history, editedFailedHistory);
+  assert.equal(state.name, 'edited-initial-tessellation-failure');
+  assert.match($('status').textContent, /kept/i);
+  window.confirm = message => { failureConfirmations.push(message); return true; };
+  clickControl('load-example');
+  await until(() => state.project.id !== editedFailedProject.id && state.solved, 'confirmed replacement escapes failed initial import');
+  assert.equal(failureConfirmations.length, 2); assert.ok(state.cells.length > 0);
+} finally { window.confirm = originalConfirm; }
+console.log('PASS terminal initial mesh failure permits replacement and protects edited settings with cancel/confirm');
+
 await openStudy(failedFitSave, 'reopen source after fitting failure');
 assert.equal(state.solved, true);
 assert.deepEqual(state.layout, durableLayout);
@@ -2425,6 +2476,106 @@ await until(() => state.project.revision === restoreDocument.project.revision &&
 assert.ok([...recoveryTexts.values()].map(text => JSON.parse(text)).some(study => study.project.id === restoreDocument.project.id && study.project.revision === replacementRevision + 1 && study.thickness === 52),
   'an edit begun during recovery validation remains in its protective recovery copy');
 console.log('PASS manual recovery protects edits begun during asynchronous source validation');
+
+// Named checkpoint Restore must abandon a stale validation when a material
+// gesture begins after it starts. A gesture can also return to its initial
+// value without ending: captureDesign then matches, but the draft is still live.
+clickControl('open-checkpoints');
+input('checkpoint-name', 'Before asynchronous material trial');
+clickControl('save-checkpoint');
+const materialCheckpoint = state.checkpoints.at(-1);
+assert.equal(materialCheckpoint.name, 'Before asynchronous material trial');
+clickControl('close-checkpoints');
+const checkpointThickness = state.thickness;
+await edit(() => { input('thickness', checkpointThickness + 1); input('thickness', checkpointThickness + 1, 'change'); }, 'material differs from named checkpoint');
+for (const returnToInitialValue of [false, true]) {
+  clickControl('open-checkpoints');
+  const heldIndex = heldValidationReplies.length;
+  holdNextValidationReply = true;
+  const row = $('checkpoint-list').querySelector(`[data-checkpoint-id="${materialCheckpoint.id}"]`);
+  [...row.querySelectorAll('button')].find(button => button.textContent === 'Restore').click();
+  await until(() => heldValidationReplies.length > heldIndex, 'hold named checkpoint restore validation');
+  clickControl('close-checkpoints');
+  const beforeGesture = currentDesign(), projectBeforeGesture = structuredClone(state.project), historyBeforeGesture = state.history.length;
+  const checkpointsBeforeGesture = structuredClone(state.checkpoints), counterBeforeGesture = state.nextCellId;
+  input('thickness', beforeGesture.thickness + 6);
+  if (returnToInitialValue) input('thickness', beforeGesture.thickness);
+  const pendingDesign = currentDesign();
+  assert.equal(state.project.revision, projectBeforeGesture.revision, 'the gesture is still an uncommitted draft');
+  heldValidationReplies[heldIndex].deliver();
+  await until(() => /current design changed while checking/i.test($('checkpoint-status').textContent), 'stale checkpoint restore explains why it was not applied');
+  await until(() => state.solved && !state.busy && !state.pending, 'material preview fits after rejected checkpoint restore');
+  assert.deepEqual(currentDesign(), pendingDesign, 'late restore cannot replace an in-progress material draft');
+  assert.deepEqual(state.project, projectBeforeGesture, 'rejected restore does not create a revision');
+  assert.equal(state.history.length, historyBeforeGesture, 'rejected restore does not create an Undo entry');
+  assert.equal(Number($('thickness').value), pendingDesign.thickness, 'the material control keeps the newer draft');
+  assert.deepEqual(state.checkpoints, checkpointsBeforeGesture, 'the named checkpoints remain available');
+  assert.equal(state.nextCellId, counterBeforeGesture, 'rejected restore preserves the cell ID counter');
+  input('thickness', pendingDesign.thickness, 'change');
+  assert.equal(state.project.revision, projectBeforeGesture.revision + (returnToInitialValue ? 0 : 1), 'only a completed changed gesture creates a revision');
+}
+console.log('PASS checkpoint restore rejects newer material drafts, including unfinished gestures returned to their original value');
+
+// A comparison can finish after the designer has started another interaction.
+// Only the initial Compare action chooses Flat view and assembled placement.
+// Its late worker response must leave later gestures and display choices alone.
+await openStudy(cornerStudy, 'checkpoint comparison race fixture');
+clickControl('open-checkpoints');
+input('checkpoint-name', 'Before corner comparison'); clickControl('save-checkpoint');
+const comparisonCheckpoint = state.checkpoints.at(-1);
+clickControl('close-checkpoints');
+async function heldCheckpointComparison() {
+  clickControl('open-checkpoints');
+  const index = heldFitReplies.length; holdNextFitReply = true;
+  const row = $('checkpoint-list').querySelector(`[data-checkpoint-id="${comparisonCheckpoint.id}"]`);
+  [...row.querySelectorAll('button')].find(button => button.textContent === 'Compare').click();
+  await until(() => heldFitReplies.length > index, 'hold checkpoint comparison result');
+  assert.equal(state.view, 'flat'); assert.equal(state.explode, 0);
+  return heldFitReplies[index];
+}
+for (const phase of ['drag', 'validation']) {
+  const reply = await heldCheckpointComparison();
+  clickControl('corner-toggle'); document.querySelector('[data-view="surface"]').click();
+  const before = currentDesign(), projectBefore = structuredClone(state.project), historyBefore = state.history.length;
+  const corner = state.result.corners.find(corner => !corner.boundary && corner.cells.length >= 3);
+  const point = beginCornerDrag(corner, corner.position.map((value, axis) => value + [18, 12, 0][axis]));
+  let sourceReply;
+  if (phase === 'validation') {
+    const index = heldValidationReplies.length; holdNextValidationReply = true;
+    pointer(canvas, 'pointerup', point.x, point.y);
+    await until(() => heldValidationReplies.length > index, 'hold newer corner validation while comparing');
+    sourceReply = heldValidationReplies[index];
+  }
+  const guidance = $('status').textContent;
+  reply.deliver();
+  await until(() => state.checkpointComparison?.id === comparisonCheckpoint.id, `comparison finishes during corner ${phase}`);
+  assert.equal(state.view, 'surface', 'comparison completion keeps the newly chosen view');
+  assert.equal(state.cornerMode, true, 'comparison completion keeps the current editing tool');
+  assert.equal($('status').textContent, guidance, 'comparison completion preserves the active edit guidance');
+  assert.deepEqual(currentDesign(), before, 'comparison completion cannot apply or discard the source candidate');
+  assert.deepEqual(state.project, projectBefore); assert.equal(state.history.length, historyBefore);
+  if (phase === 'drag') {
+    assert.equal(window.cellStudy.controls.enabled, false, 'comparison keeps the active pointer capture');
+    assert.equal(canvas.hasPointerCapture(1), true);
+    pointer(canvas, 'pointerup', point.x, point.y);
+  } else {
+    assert.equal($('save-study').disabled, true, 'comparison keeps pending corner validation guarded');
+    sourceReply.deliver();
+  }
+  await until(() => state.project.revision > projectBefore.revision && state.solved && !state.busy && !state.pending, `newer corner ${phase} still commits after comparison completion`);
+  assert.notDeepEqual(state.layout, before.layout, 'the newer corner move was accepted');
+  clickControl('end-checkpoint-comparison');
+  await edit(() => key('z'), 'undo the comparison race corner move');
+}
+const viewReply = await heldCheckpointComparison(), viewRevision = state.project.revision;
+document.querySelector('[data-view="solid"]').click(); input('explode', 35); input('explode', 35, 'change');
+viewReply.deliver();
+await until(() => state.checkpointComparison?.id === comparisonCheckpoint.id, 'comparison finishes after newer presentation choices');
+assert.equal(state.view, 'solid', 'comparison completion does not choose Flat view a second time');
+assert.equal(state.explode, 35, 'comparison completion does not reset a later exploded view');
+assert.equal(state.project.revision, viewRevision, 'comparison and presentation leave the design revision unchanged');
+input('explode', 0); input('explode', 0, 'change'); clickControl('end-checkpoint-comparison');
+console.log('PASS late checkpoint comparison preserves active corner drags, pending source validation, later views and exploded placement');
 
 // Exploded placement is a presentation transform shared by render and exports.
 escape();

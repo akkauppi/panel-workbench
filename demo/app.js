@@ -16,6 +16,12 @@ import { assemblyGuideCorners } from './assembly-guides.js';
 import { readGeneratorPolicy } from './generator-policy.js';
 import { readPanelOffsets, reconcilePanelOffsets } from './panel-offsets.js';
 import { describePanelProblems } from './panel-diagnostics.js';
+import { inspectPanelJoint } from './joint-inspection.js';
+import { readProjectLimits, evaluateProjectLimits } from './project-limits.js';
+import { readProtectedCellIds, assertProtectedLayoutUnchanged } from './edit-locks.js';
+import { createCheckpoint, checkpointStudy } from './checkpoints.js';
+import { buildHandoffPackage } from './handoff.js';
+import { buildFeedbackBundle } from './feedback-bundle.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
@@ -34,6 +40,8 @@ const state = {
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
   straightness: 0.7, thickness: 40, roundover: 2, carve: false, minimumThickness: 12, flipOutside: false,
   project: null, lastCalculation: undefined, openedCalculation: null, comparison: null, latestAcceptedEdit: null, latestRejection: null,
+  projectLimits: null, protectedCellIds: [], checkpoints: [], lastHandoff: undefined,
+  inspection: null, checkpointComparison: null,
   recoveryEnabled: false, downloadedRevision: 0, documentUnits: 'mm', documentUp: 'y',
   revision: 0, requested: 0, busy: false, pending: null, modelRevision: 0, solved: false
 };
@@ -68,6 +76,7 @@ const junctionGroup = new THREE.Group(), cornerGroup = new THREE.Group(), corner
 const cornerSketchGroup = new THREE.Group(), fittingGroup = new THREE.Group(), assemblyGuideGroup = new THREE.Group();
 scene.add(cellGroup, seedGroup, referenceGroup, junctionGroup, cornerGroup, cornerGuide, cornerSketchGroup, fittingGroup, assemblyGuideGroup);
 const offsetGroup = new THREE.Group(); scene.add(offsetGroup);
+const inspectionGroup = new THREE.Group(), comparisonGroup = new THREE.Group(); scene.add(inspectionGroup, comparisonGroup);
 let sourceMesh, grid, seedGeometry, seedMaterial;
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 const worker = new Worker('./worker.js', { type: 'module' });
@@ -76,6 +85,8 @@ let rhinoWorker = null;
 const rhinoRequests = new Map();
 let rhinoSequence = 0, exportingRhino = false;
 let diagnosticResult = null, diagnosticWaiting = null, projectUI, restoringStudy = false, startupRestoreOpening = null;
+let workflowBusy = false, comparisonSequence = 0, comparisonWorker = null, limitReport = null, limitReportKey = null, feedbackCapture = null;
+let sectionNormal = new THREE.Vector3(0, 0, 1), sectionFlipped = false;
 function rhinoOperation(inputs) {
   if (!rhinoWorker) {
     rhinoWorker = new Worker('./rhino-worker.js', { type: 'module' });
@@ -104,9 +115,9 @@ function sourceCanSave() {
   return !!state.layout && !!state.project && !state.generating && !cornerPending && !drag &&
     JSON.stringify(state.layout.recipe) === JSON.stringify(layoutRecipe(state));
 }
-function currentStudy() {
+function currentStudy(overrides = {}) {
   if (!sourceCanSave()) return null;
-  return createStudy(state, { units: state.documentUnits, up: state.documentUp,
+  return createStudy({ ...state, ...overrides }, { units: state.documentUnits, up: state.documentUp,
     camera: camera.position.toArray(), target: controls.target.toArray(),
     producer: { name: 'Panel Workbench', build: buildIdentity() } });
 }
@@ -117,6 +128,12 @@ function acceptedProjectChange(type = 'edit', detail = {}) {
   state.openedCalculation = null;
   projectUI?.changed();
   updateWorkspaceChrome();
+}
+function acceptedMetadataChange(type) {
+  const calculated = state.solved && !state.busy && !state.pending && state.lastCalculation?.revision === state.project.revision;
+  acceptedProjectChange(type);
+  if (calculated) state.lastCalculation = { ...state.lastCalculation, revision: state.project.revision };
+  projectUI?.changed(); updateWorkflowControls();
 }
 function installProject(study = null, { startup = false, recovered = false } = {}) {
   state.project = study?.project ?? createProjectMetadata();
@@ -133,6 +150,15 @@ async function checkpointBeforeReplacement() {
   cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); cancelGeneration();
   finishPendingEdit();
   if (state.recoveryEnabled && !sourceCanSave()) {
+    if (state.model && state.rawModel && !state.layout && !state.directBase && !state.ready && !state.cells.length &&
+        !state.busy && !state.pending && !state.generating && !drag && !cornerPending && !pendingEdit) {
+      // An imported source whose first calculation failed has no accepted
+      // layout to checkpoint. Do not trap it behind an impossible save.
+      if (state.project.revision === 1 && !state.history.length && !state.latestAcceptedEdit) return true;
+      const discard = window.confirm('No cell layout could be created for this source. Open the other project and discard the settings changed since importing it? Your original source file stays unchanged.');
+      if (!discard) setStatus('The imported source and its settings are kept. Open another file when you are ready to replace them.');
+      return discard;
+    }
     setStatus('Finish the source edit before replacing this project. The current work is kept.', true);
     return false;
   }
@@ -161,7 +187,7 @@ function updateWorkspaceChrome() {
   $('project-revision').textContent = state.project ? `Revision ${state.project.revision}` : 'New project';
   document.title = `${state.name} — Panel Workbench`;
   $('view-name').textContent = viewNames[state.view];
-  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.offsetMode ? 'Offset panel' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
+  $('active-tool-name').textContent = state.inspection ? 'Inspect joint' : state.view === 'reference' ? 'Inspect source' : state.offsetMode ? 'Offset panel' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
   $('ribbon-selection-context').textContent = state.selectedIds.length > 1 ? `${state.selectedIds.length} cells selected`
     : state.selected != null ? `Cell ${panelId(state.selected)}` : 'No selection';
   for (const button of document.querySelectorAll('[data-browser-view]')) {
@@ -217,6 +243,8 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
   if (!preserveSource) state.sourceSurface = null;
   state.requested++;
   state.solved = false;
+  state.inspection = null; clearInspectionDisplay();
+  refreshProjectLimits();
   buildFittingOverlay();
   $('calculation-comparison').textContent = 'Fitting panels… Accepted source edits can be saved while fitting.';
   state.pending = { id: state.requested, model: newModel ? state.model : undefined,
@@ -253,7 +281,7 @@ worker.onmessage = ({ data }) => {
   }
   state.busy = false;
   if (data.id === state.requested) {
-    if (data.error) { state.solved = false; $('calculation-comparison').textContent = 'Panel fitting failed. Save the accepted source and settings, or download a feedback report.'; setStatus(data.error, true); $('loading').hidden = true; }
+    if (data.error) { state.solved = false; showCalculationFailure(data.error); $('loading').hidden = true; }
     else {
       if (!drag) state.seeds = data.seeds;
       state.layout = immutableLayout(data.layout);
@@ -269,6 +297,7 @@ worker.onmessage = ({ data }) => {
       state.solved = true;
       state.revision++;
       updateCalculationFeedback(summarizeCalculation(data.result));
+      refreshProjectLimits();
       if (data.result.offsetFeedback?.length) $('calculation-comparison').textContent += ` ${data.result.offsetFeedback.join(' ')}`;
       if (state.recoveryEnabled) projectUI?.changed({ activity: false });
       if (!directDrag() && !cornerPending) {
@@ -295,9 +324,16 @@ worker.onerror = error => {
   studyValidations.clear();
   state.busy = false; state.pending = null; state.solved = false;
   $('loading').hidden = true; setBusy(false); updateExportAvailability();
-  $('calculation-comparison').textContent = 'Panel fitting failed. Save the accepted source and settings, or download a feedback report.';
-  setStatus(`Could not calculate cells: ${error.message}`, true);
+  showCalculationFailure(`Could not calculate cells: ${error.message}`);
 };
+function showCalculationFailure(message) {
+  const explanation = state.layout
+    ? 'Panel fitting failed. Save the accepted source and settings, or download a feedback report.'
+    : 'The source opened, but no cell layout could be created. You can open another file or report this issue; the original source file is unchanged.';
+  $('calculation-comparison').textContent = explanation;
+  $('project-limits-note').textContent = 'Project limits are saved, but measurements are unavailable because the panel calculation failed.';
+  setStatus(state.layout ? message : `${explanation} Details: ${message}`, true);
+}
 
 function geometry(positions, triangles) {
   const result = new THREE.BufferGeometry();
@@ -323,6 +359,12 @@ function panelColor(id) {
 }
 function cellColor(cell) {
   if (state.selectedIds.includes(cell.id)) return new THREE.Color('#8eb3e5');
+  if (state.checkpointComparison && state.solved) {
+    const comparison = checkpointDifference();
+    if (comparison.addedIds?.includes(cell.id)) return new THREE.Color('#69a789');
+    if (comparison.changedIds?.includes(cell.id)) return new THREE.Color('#dfad61');
+  }
+  if (limitReport?.warningPanelIds.includes(cell.id)) return new THREE.Color('#e0bd72');
   if (state.color === 'fit') {
     const color = new THREE.Color('#5d9781');
     const t = Math.min(1, cell.maxDeviation / 80);
@@ -348,7 +390,7 @@ function canArrange() {
   const sourceReady = state.view === 'surface' && !!state.sourceSurface;
   return !state.generating && !cornerPending && (sourceReady || state.solved && !state.busy && !state.pending);
 }
-function graphCentreMode() { return !!state.panelOffsets.length || !!state.directBase || !!state.cornerEdits.length || !!state.mergeGroups.length || state.pattern.type !== 'organic'; }
+function graphCentreMode() { return !!state.protectedCellIds.length || !!state.panelOffsets.length || !!state.directBase || !!state.cornerEdits.length || !!state.mergeGroups.length || state.pattern.type !== 'organic'; }
 function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell' || drag?.kind === 'split' || drag?.kind === 'offset'; }
 function buildCells() {
   disposeGroup(cellGroup);
@@ -388,8 +430,9 @@ function buildCells() {
       marker.position.fromArray(junction.position); junctionGroup.add(marker);
     }
   }
-  junctionGroup.visible = !state.cornerMode;
+  junctionGroup.visible = !state.cornerMode && !state.inspection;
   updateReference(); buildFittingOverlay(); buildAssemblyGuides(); buildOffsetHandle();
+  applyInspectionDisplay(); buildCheckpointComparison();
 }
 function buildAssemblyGuides() {
   disposeGroup(assemblyGuideGroup);
@@ -434,7 +477,7 @@ function buildAssemblyGuides() {
 function buildFittingOverlay() {
   disposeGroup(fittingGroup);
   const available = state.solved && !state.busy && !state.pending && !state.sourceSurface && !drag && !cornerPending;
-  fittingGroup.visible = $('show-fitting').checked && available && state.view !== 'reference' && state.explode === 0;
+  fittingGroup.visible = !state.inspection && $('show-fitting').checked && available && state.view !== 'reference' && state.explode === 0;
   if (!fittingGroup.visible) return;
   const source = [], fitted = [], shifts = [];
   for (const cell of state.cells) {
@@ -483,7 +526,7 @@ function buildSeeds() {
     if (graph) dot.userData.cellHandle = seed;
     seedGroup.add(dot);
   }
-  seedGroup.visible = $('show-seeds').checked && !state.cornerMode && state.view !== 'reference' && state.explode === 0;
+  seedGroup.visible = !state.inspection && $('show-seeds').checked && !state.cornerMode && state.view !== 'reference' && state.explode === 0;
 }
 function buildCorners() {
   disposeGroup(cornerGroup);
@@ -498,7 +541,7 @@ function buildCorners() {
     handle.userData.corner = corner;
     cornerGroup.add(handle);
   }
-  cornerGroup.visible = state.cornerMode && state.view !== 'reference' && state.explode === 0;
+  cornerGroup.visible = !state.inspection && state.cornerMode && state.view !== 'reference' && state.explode === 0;
   cornerGroup.updateMatrixWorld(true);
 }
 function updateCornerPositions() {
@@ -546,6 +589,7 @@ function paintCornerSketch() {
 }
 
 function updateReference() {
+  if (state.inspection) { referenceGroup.visible = false; return; }
   referenceGroup.visible = state.view === 'reference' || $('show-original').checked;
   for (const mesh of referenceGroup.children) {
     mesh.material.opacity = state.view === 'reference' ? 1 : 0.16;
@@ -578,7 +622,12 @@ function fitView(preset = 'iso') {
   const previousDirection = camera.position.clone().sub(controls.target).normalize();
   let { center, dimensions } = state.analysis;
   let fittingPoints = state.model.vertices;
-  if (state.explode > 0 && state.view !== 'reference' && cellGroup.children.length) {
+  if (state.inspection) {
+    const { min, max } = state.inspection.bounds;
+    center = min.map((value, axis) => (value + max[axis]) / 2);
+    dimensions = min.map((value, axis) => Math.max(1, max[axis] - value));
+    fittingPoints = []; for (const x of [min[0], max[0]]) for (const y of [min[1], max[1]]) for (const z of [min[2], max[2]]) fittingPoints.push([x,y,z]);
+  } else if (state.explode > 0 && state.view !== 'reference' && cellGroup.children.length) {
     cellGroup.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(cellGroup);
     if ($('show-assembly-guides').checked) {
@@ -642,6 +691,10 @@ function buildReference() {
   updateReference();
 }
 function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern, projectDocument = null, startup = false, recovered = false, localActivityAt } = {}) {
+  endCheckpointComparison(false); state.inspection = null; clearInspectionDisplay();
+  state.checkpoints = structuredClone(projectDocument?.checkpoints || []);
+  state.lastHandoff = projectDocument?.lastHandoff;
+  limitReport = null; limitReportKey = null;
   setOffsetNotice('');
   const factor = { mm: 1, cm: 10, m: 1000 }[$('model-units').value];
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
@@ -672,6 +725,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   }
   disposeGroup(cellGroup); disposeGroup(seedGroup); disposeGroup(cornerGroup);
   if (!preserveSettings) {
+    state.projectLimits = readProjectLimits(); state.protectedCellIds = [];
     state.panelOffsets = [];
     state.generatorPolicy = null;
     state.pattern = readPattern(pattern);
@@ -747,8 +801,10 @@ function updateInspector() {
   $('cell-weight').value = Math.round((seed?.weight ?? 1) * 100);
   $('cell-weight-value').textContent = `${Math.round((seed?.weight ?? 1) * 100)}%`;
   $('cell-weight').disabled = !!state.panelOffsets.length || state.pattern.type !== 'organic' || !!state.directBase || !!state.cornerEdits.length || state.selectedIds.length > 1 || (cell.memberSeedIds?.length ?? 1) > 1;
+  if (state.protectedCellIds.length) $('cell-weight').disabled = true;
   $('cell-weight').title = state.panelOffsets.length ? 'Cell influence is unavailable while panel offsets are active. Move source corners or centres to reshape cells, or reset all offsets first.' : '';
   $('cell-weight-help').textContent = state.panelOffsets.length ? 'Cell influence is unavailable with panel offsets. Move source corners or centres instead, or reset all offsets first.' : state.pattern.type !== 'organic' ? 'Use corner editing and merges to reshape this layout.' : state.directBase ? 'Reset direct edits to change generated cell influence.' : state.cornerEdits.length ? 'Reset corners to change cell influence while keeping merged groups.' : (cell.memberSeedIds?.length ?? 1) > 1 ? 'This merged cell keeps its original regions. Undo the merge to edit their centres or influence.' : state.selectedIds.length > 1 ? 'Select one cell to adjust its influence.' : 'Give this cell more area. Its neighbours adjust.';
+  if (state.protectedCellIds.length) $('cell-weight-help').textContent = 'Source edit locks are active. Move unlocked corners or centres, or unlock all cells before changing generated influence.';
   const solid = state.result?.solids?.find(s => s.id === cell.id);
   const fittedIssues = cell.issues || [], notes = [];
   const problem = describePanelProblems(cell, solid, { hasOffsets: state.panelOffsets.length > 0 });
@@ -787,6 +843,7 @@ function drawOutline(cell) {
   ctx.fillText(`${Math.round(cell.width)} mm`, canvas.width / 2, canvas.height - 12);
 }
 function selectCell(id, additive = false) {
+  if (id != null && state.inspection && !state.inspection.panelIds.includes(id)) leaveInspection();
   if (additive) state.selectedIds = state.selectedIds.includes(id) ? state.selectedIds.filter(value => value !== id) : [...state.selectedIds, id];
   else state.selectedIds = id == null ? [] : [id];
   state.selected = state.selectedIds.includes(id) ? id : state.selectedIds.at(-1) ?? null;
@@ -798,9 +855,311 @@ function selectCell(id, additive = false) {
   updateInspector(); buildFittingOverlay(); buildAssemblyGuides(); buildOffsetHandle();
 }
 
+function panelHits() {
+  const hits = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh && object.visible));
+  return hits.filter(hit => !(renderer.clippingPlanes || []).some(plane => plane.distanceToPoint(hit.point) < 0));
+}
+function clearInspectionDisplay() {
+  disposeGroup(inspectionGroup); renderer.clippingPlanes = [];
+  $('section-enabled').checked = false; $('section-position').disabled = true;
+  $('inspection-tools').hidden = true;
+  for (const object of cellGroup.children) object.visible = true;
+  updateReference();
+  updateWorkflowControls();
+}
+function leaveInspection() { if (state.inspection) { state.inspection = null; clearInspectionDisplay(); buildCells(); } }
+function applyInspectionDisplay() {
+  const inspection = state.inspection;
+  if (!inspection) return;
+  const ids = new Set(inspection.panelIds);
+  for (const object of cellGroup.children) object.visible = ids.has(object.userData.cellId);
+  seedGroup.visible = false; cornerGroup.visible = false; junctionGroup.visible = false;
+  fittingGroup.visible = false; assemblyGuideGroup.visible = false; referenceGroup.visible = false;
+  disposeGroup(inspectionGroup);
+  if (inspection.segments.length) {
+    const line = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(inspection.segments.flat().map(vectors)), new THREE.LineBasicMaterial({ color: '#b83e2d', depthTest: true, linewidth: 2 }));
+    inspectionGroup.add(line);
+  }
+  const radius = Math.max(1, Math.hypot(...inspection.bounds.max.map((v,i)=>v-inspection.bounds.min[i])) * .006);
+  for (const point of inspection.points) {
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8), new THREE.MeshBasicMaterial({ color: '#b83e2d', depthTest: true }));
+    marker.position.fromArray(point); inspectionGroup.add(marker);
+  }
+  $('inspection-tools').hidden = false;
+  $('inspection-title').textContent = `${panelId(inspection.panelId)} · ${inspection.precision === 'exact' ? 'Located issue' : 'Panel inspection'}`;
+  $('inspection-note').textContent = inspection.explanation;
+  const m = inspection.measurements;
+  $('inspection-measurements').textContent = `Shortest edge: ${mm(m.shortestEdgeMm)} · Flatness: ${mm(m.maxPlanarityMm)} · Measured joint mismatch: ${mm(m.maxSharedCornerMismatchMm)}`;
+  updateSectionPlane();
+}
+function updateSectionPlane() {
+  const inspection = state.inspection;
+  $('section-position').disabled = !inspection || !$('section-enabled').checked;
+  if (!inspection || !$('section-enabled').checked) { renderer.clippingPlanes = []; return; }
+  const span = Math.max(1, Math.hypot(...inspection.bounds.max.map((v,i)=>v-inspection.bounds.min[i])));
+  const normal = sectionNormal.clone().multiplyScalar(sectionFlipped ? -1 : 1);
+  const point = vectors(inspection.focus).addScaledVector(sectionNormal, Number($('section-position').value) * span / 200);
+  renderer.clippingPlanes = [new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point)];
+}
+function inspectJoint(id = state.selected) {
+  if (!state.solved || state.busy || state.pending || id == null) { setStatus('Select a panel after the current calculation finishes.'); return; }
+  try {
+    const inspection = inspectPanelJoint(state.result, id);
+    resetInteraction(); state.explode = 0; $('explode').value = 0; updateControlLabels();
+    const failedSolid = state.result.solids.find(solid => solid.id === id)?.valid === false;
+    showView(failedSolid && state.cells.find(cell => cell.id === id)?.valid ? 'solid' : 'flat');
+    state.inspection = inspection; sectionNormal.copy(camera.getWorldDirection(new THREE.Vector3())).negate(); sectionFlipped = false;
+    $('section-position').value = 0; selectCell(id); buildCells(); applyInspectionDisplay(); fitView(null);
+    updateWorkflowControls(); setStatus(`Inspecting ${panelId(id)} and ${inspection.panelIds.length - 1} neighbours. ${inspection.explanation}`);
+  } catch (error) { setStatus(error.message, true); }
+}
+function showAllPanels() {
+  state.inspection = null; clearInspectionDisplay(); buildCells(); buildSeeds(); buildCorners(); updateReference(); updateWorkflowControls(); fitView(null);
+}
+$('inspect-joint').addEventListener('click', () => inspectJoint());
+for (const id of ['show-all-panels', 'close-inspection']) $(id).addEventListener('click', showAllPanels);
+$('section-enabled').addEventListener('change', updateSectionPlane);
+$('section-position').addEventListener('input', updateSectionPlane);
+$('section-camera').addEventListener('click', () => { sectionNormal.copy(camera.getWorldDirection(new THREE.Vector3())).negate(); sectionFlipped = false; $('section-position').value = 0; updateSectionPlane(); });
+$('section-flip').addEventListener('click', () => { sectionFlipped = !sectionFlipped; updateSectionPlane(); });
+
+function checkpointDifference() {
+  const comparison = state.checkpointComparison;
+  if (!comparison) return null;
+  if (comparison.currentResult !== state.result) {
+    comparison.currentResult = state.result;
+    comparison.difference = compareCalculations(comparison.summary, summarizeCalculation(state.result));
+  }
+  return comparison.difference;
+}
+function buildCheckpointComparison() {
+  disposeGroup(comparisonGroup);
+  const comparison = state.checkpointComparison;
+  $('checkpoint-comparison').hidden = !comparison;
+  if (!comparison) return;
+  if (!state.solved || state.busy || state.pending) { $('checkpoint-comparison-note').textContent = `Comparing “${comparison.name}” · Waiting for current panels.`; return; }
+  const difference = checkpointDifference();
+  $('checkpoint-comparison-note').textContent = `“${comparison.name}” recalculated with this build. ${difference.changedIds.length} changed (amber), ${difference.addedIds.length} added (green), ${difference.removedIds.length} removed. Dashed outlines show the checkpoint. Blue is your selection.`;
+  if (!difference.comparable) $('checkpoint-comparison-note').textContent = 'The comparison is too large for a complete change list. Checkpoint outlines are shown for visual review.';
+  if (!['flat', 'solid'].includes(state.view) || state.explode) return;
+  const points = [];
+  for (const cell of comparison.result.cells) for (const ring of cell.loops) for (let i=0;i<ring.length;i++) points.push(cell.flatPositions[ring[i]],cell.flatPositions[ring[(i+1)%ring.length]]);
+  const line = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points.map(vectors)), new THREE.LineDashedMaterial({ color: '#626f80', dashSize: state.size * .035, gapSize: state.size * .02, depthTest: true, transparent: true, opacity: .8 }));
+  line.computeLineDistances(); comparisonGroup.add(line);
+}
+function endCheckpointComparison(rebuild = true) {
+  comparisonSequence++; comparisonWorker?.terminate(); comparisonWorker = null;
+  state.checkpointComparison = null; disposeGroup(comparisonGroup); $('checkpoint-comparison').hidden = true;
+  if (rebuild) { buildCells(); updateWorkflowControls(); }
+}
+$('end-checkpoint-comparison').addEventListener('click', () => endCheckpointComparison());
+
+function assertEditablePanelIds(ids) {
+  const locked = [...new Set(ids || [])].filter(id => state.protectedCellIds.includes(id));
+  if (locked.length) throw new Error(`${locked.map(panelId).join(', ')} ${locked.length === 1 ? 'is' : 'are'} locked against source edits. Unlock the affected cells first; your design is kept.`);
+}
+function syncWorkflowControls() {
+  const limits = readProjectLimits(state.projectLimits);
+  for (const [id, key] of [['limit-stock-width','stockWidthMm'],['limit-stock-height','stockHeightMm'],['limit-min-edge','minEdgeMm'],['limit-max-deviation','maxDeviationMm']]) $(id).value = limits[key] ?? '';
+  refreshProjectLimits();
+}
+function refreshProjectLimits() {
+  const key = JSON.stringify(readProjectLimits(state.projectLimits));
+  if (state.solved && state.result && (limitReportKey?.result !== state.result || limitReportKey?.settings !== key)) {
+    limitReport = evaluateProjectLimits(state.result, state.projectLimits); limitReportKey = { result: state.result, settings: key };
+  } else if (!state.solved) { limitReport = null; limitReportKey = null; }
+  $('limit-warning-count').textContent = limitReport?.warningPanelIds.length ? `${limitReport.warningPanelIds.length} panels` : '';
+  $('project-limit-list').replaceChildren();
+  if (!limitReport) { $('project-limits-note').textContent = state.model ? 'Project warnings will update after the panel calculation finishes. Your chosen limits are saved.' : 'Optional project warnings; geometry and production checks remain separate.'; return; }
+  for (const panel of limitReport.panels.filter(panel => panel.warnings.length)) {
+    const li = document.createElement('li'), button = document.createElement('button'), note = document.createElement('p');
+    button.type = 'button'; button.className = 'problem-select'; button.textContent = panelId(panel.id);
+    button.addEventListener('click', () => inspectJoint(panel.id));
+    note.textContent = panel.warnings.map(warning => warning.message).join(' '); li.append(button,note); $('project-limit-list').append(li);
+  }
+  $('project-limits-note').textContent = limitReport.warningPanelIds.length ? `${limitReport.warningPanelIds.length} panels exceed a project limit or need a measurement check. Amber is a project warning, not a geometry failure; production export keeps its existing validity checks.` : 'No configured project limits exceeded. Stock fit does not include tool clearance, grain direction or sheet nesting.';
+}
+function updateWorkflowControls() {
+  const blocked = !state.layout || !!drag || !!cornerPending || state.generating;
+  $('open-checkpoints').disabled = !state.layout;
+  $('save-checkpoint').disabled = blocked || workflowBusy || !!pendingEdit;
+  $('apply-project-limits').disabled = blocked;
+  $('lock-selected').disabled = blocked || !state.selectedIds.length;
+  const allLocked = state.selectedIds.length && state.selectedIds.every(id => state.protectedCellIds.includes(id));
+  $('lock-selected').textContent = allLocked ? 'Unlock edits' : 'Lock edits';
+  $('unlock-all').hidden = !state.protectedCellIds.length; $('unlock-all').disabled = blocked;
+  $('lock-status').hidden = !state.protectedCellIds.length;
+  $('lock-status').textContent = `${state.protectedCellIds.length} cells locked against source edits. Neighbouring fitting and stock settings can still change their derived parts.`;
+  $('inspect-joint').disabled = !state.solved || state.busy || !!state.pending || state.selectedIds.length !== 1;
+  $('show-all-panels').disabled = !state.inspection;
+  $('report-issue').disabled = !state.project || workflowBusy;
+  $('export-handoff').disabled = workflowBusy || $('export-rhino').disabled || !sourceCanSave();
+}
+$('apply-project-limits').addEventListener('click', () => {
+  try {
+    finishPendingEdit(); const before = snapshot();
+    const values = Object.fromEntries([['limit-stock-width','stockWidthMm'],['limit-stock-height','stockHeightMm'],['limit-min-edge','minEdgeMm'],['limit-max-deviation','maxDeviationMm']].map(([id,key])=>[key,$(id).value === '' ? null : Number($(id).value)]));
+    state.projectLimits = readProjectLimits(values); recordEdit(before);
+    if (state.solved && state.lastCalculation) state.lastCalculation = { ...state.lastCalculation, revision: state.project.revision };
+    refreshProjectLimits(); buildCells(); projectUI?.changed(); setStatus('Project fabrication limits saved. Warnings help review; they do not change the geometry.');
+  } catch (error) { $('project-limits-note').textContent = error.message; setStatus(error.message, true); }
+});
+function changeEditLocks(all = false) {
+  if (drag || cornerPending || state.generating || !state.layout) return;
+  finishPendingEdit(); const before = snapshot();
+  const selected = state.selectedIds, unlock = selected.every(id => state.protectedCellIds.includes(id));
+  state.protectedCellIds = all ? [] : readProtectedCellIds(unlock ? state.protectedCellIds.filter(id => !selected.includes(id)) : [...new Set([...state.protectedCellIds, ...selected])], state.layout.cells);
+  recordEdit(before); if (state.solved && state.lastCalculation) state.lastCalculation = { ...state.lastCalculation, revision: state.project.revision };
+  projectUI?.changed(); buildSeeds(); buildOffsetHandle(); updateInspector(); updateWorkflowControls();
+  setStatus(all || unlock ? 'Source edit locks removed. Undo restores them.' : 'Source edit locks saved. Fitted parts can still change when neighbours or stock settings change.');
+}
+$('lock-selected').addEventListener('click', () => changeEditLocks());
+$('unlock-all').addEventListener('click', () => changeEditLocks(true));
+
+function renderCheckpoints() {
+  const list = $('checkpoint-list'); list.replaceChildren();
+  for (const checkpoint of state.checkpoints) {
+    const row = document.createElement('section'), title = document.createElement('strong'), info = document.createElement('p'), actions = document.createElement('div');
+    row.className = 'workflow-checkpoint'; row.dataset.checkpointId = checkpoint.id; title.textContent = checkpoint.name;
+    info.className = 'control-hint'; info.textContent = `Saved revision ${checkpoint.study.project.revision} · ${new Date(checkpoint.createdAt).toLocaleString()} · ${checkpoint.study.layout.cells.length} cells`;
+    actions.className = 'workflow-actions';
+    for (const [label, action] of [
+      ['Compare', () => compareCheckpoint(checkpoint)],
+      ['Restore', () => restoreCheckpoint(checkpoint)],
+      ['Download', () => { const parent = currentStudy(); if (!parent) throw new Error('Finish the source edit first.'); const study = readStudy(checkpointStudy(checkpoint,parent)); download(`checkpoint-${checkpoint.id}-study.json`, serializeStudy(study), 'application/json'); }],
+      ['Delete', () => {
+        const proposed = state.checkpoints.filter(item => item.id !== checkpoint.id);
+        state.checkpoints = proposed; acceptedMetadataChange('delete-checkpoint');
+        if (state.checkpointComparison?.id === checkpoint.id) endCheckpointComparison();
+        renderCheckpoints(); $('checkpoint-status').textContent = `“${checkpoint.name}” removed from this study. Previously downloaded copies keep it.`;
+      }],
+    ]) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = label;
+      button.disabled = workflowBusy || !sourceCanSave();
+      button.addEventListener('click', async () => { try { await action(); } catch (error) { $('checkpoint-status').textContent = error.message; setStatus(error.message,true); } }); actions.append(button);
+    }
+    row.append(title,info,actions); list.append(row);
+  }
+  if (!state.checkpoints.length) { const note = document.createElement('p'); note.textContent = 'No named checkpoints yet. Save one before trying a different arrangement.'; list.append(note); }
+  updateWorkflowControls();
+}
+$('open-checkpoints').addEventListener('click', () => { finishPendingEdit(); renderCheckpoints(); $('checkpoint-status').textContent = ''; $('checkpoints-dialog').showModal(); });
+$('close-checkpoints').addEventListener('click', () => $('checkpoints-dialog').close());
+$('save-checkpoint').addEventListener('click', () => {
+  try {
+    finishPendingEdit(); const study = currentStudy(); if (!study) throw new Error('Finish the source edit before saving a checkpoint.');
+    const checkpoint = createCheckpoint(study, $('checkpoint-name').value), next = [...state.checkpoints,checkpoint];
+    serializeStudy(currentStudy({ checkpoints: next, project: advanceProjectRevision(state.project) }));
+    state.checkpoints = next; acceptedMetadataChange('create-checkpoint'); renderCheckpoints();
+    $('checkpoint-name').value = ''; $('checkpoint-status').textContent = `“${checkpoint.name}” saved in this study. Download the study for a portable backup.`;
+  } catch (error) { $('checkpoint-status').textContent = error.message; setStatus(error.message,true); }
+});
+async function compareCheckpoint(checkpoint) {
+  const parent = currentStudy(); if (!parent) throw new Error('Finish the source edit before comparing checkpoints.');
+  const study = readStudy(checkpointStudy(checkpoint,parent));
+  endCheckpointComparison(false); const sequence = ++comparisonSequence, modelRevision = state.modelRevision;
+  $('checkpoints-dialog').close(); resetInteraction();
+  state.explode = 0; $('explode').value = 0; updateControlLabels(); showView('flat');
+  // resetInteraction cancels the former comparison; this request owns a fresh token.
+  const token = ++comparisonSequence;
+  const comparison = new Worker('./worker.js', { type: 'module' }); comparisonWorker = comparison;
+  setStatus(`Recalculating “${checkpoint.name}” for comparison… You can continue editing.`);
+  const factor = { mm:1, cm:10, m:1000 }[study.units];
+  comparison.onmessage = ({data}) => {
+    comparison.terminate(); if (comparisonWorker === comparison) comparisonWorker = null;
+    if (token !== comparisonSequence || modelRevision !== state.modelRevision || !state.checkpoints.some(item=>item.id===checkpoint.id)) return;
+    if (data.error) { setStatus(`Could not compare this checkpoint: ${data.error}. The current design is kept.`,true); return; }
+    state.checkpointComparison = { id:checkpoint.id, name:checkpoint.name, result:data.result, summary:summarizeCalculation(data.result), currentResult:null };
+    const editing = drag || cornerPending || state.generating || pendingEdit;
+    if (!editing) buildCells();
+    else {
+      $('checkpoint-comparison').hidden = false;
+      $('checkpoint-comparison-note').textContent = `“${checkpoint.name}” comparison is ready. Finish the current edit to update its outlines.`;
+    }
+    updateWorkflowControls();
+    if (!editing) setStatus('Checkpoint comparison ready. Amber panels changed; green panels were added. Dashed outlines show the recalculated checkpoint.');
+  };
+  comparison.onerror = error => { comparison.terminate(); if(token===comparisonSequence) { comparisonWorker=null; setStatus(`Checkpoint comparison stopped: ${error.message}. The current design is kept.`,true); } };
+  comparison.postMessage({ ...captureDesign(study), id:sequence, model:{vertices:study.rawModel.vertices.map(p=>p.map(v=>v*factor)),triangles:study.rawModel.triangles} });
+}
+async function restoreCheckpoint(checkpoint) {
+  if (workflowBusy || !sourceCanSave()) throw new Error('Finish the current source edit before restoring a checkpoint.');
+  finishPendingEdit(); const parent = currentStudy(), study = readStudy(checkpointStudy(checkpoint,parent));
+  const before = snapshot(), revision = state.project.revision, modelRevision = state.modelRevision, nextCellId = state.nextCellId;
+  workflowBusy = true; renderCheckpoints(); $('checkpoint-status').textContent = 'Checking this checkpoint before restoring…';
+  try {
+    const {layout} = await validateStudyGeometry(study);
+    if (revision !== state.project.revision || modelRevision !== state.modelRevision || drag || cornerPending || state.generating || pendingEdit || JSON.stringify(captureDesign(state)) !== JSON.stringify(before.design)) throw new Error('The current design changed while checking the checkpoint. Try Restore again; the current work is kept.');
+    resetInteraction(); Object.assign(state,captureDesign(study)); state.layout = immutableLayout(layout);
+    state.nextCellId = Math.max(nextCellId,state.nextCellId,study.nextCellId); state.lastLayoutChange = null;
+    recordEdit(before); syncDesignControls(); requestLayout();
+    if (study.camera && study.target) { camera.position.fromArray(study.camera); controls.target.fromArray(study.target); controls.update(); }
+    showView(study.view); $('checkpoints-dialog').close();
+    setStatus(`“${checkpoint.name}” restored as a new revision. Undo returns to your previous arrangement. Named checkpoints are kept.`);
+  } finally { workflowBusy = false; renderCheckpoints(); }
+}
+
+function feedbackReport() {
+  return createDiagnosticReport({ project:state.project, build:buildIdentity(), settings:{...state,units:state.documentUnits,up:state.documentUp},
+    result:state.solved && !state.busy && !state.pending ? state.result : null, previousSummary:state.openedCalculation?.summary,
+    selectedIds:state.selectedIds, latestAcceptedEdit:state.latestAcceptedEdit, latestRejection:state.latestRejection });
+}
+function captureViewport() {
+  renderer.render(scene,camera);
+  const dataURL = renderer.domElement.toDataURL('image/png');
+  if (!dataURL.startsWith('data:image/png;base64,')) throw new Error('The browser could not capture this view. You can download the report without a screenshot.');
+  return {dataURL, bytes:Uint8Array.from(atob(dataURL.split(',')[1]),char=>char.charCodeAt(0))};
+}
+$('report-issue').addEventListener('click', () => {
+  finishPendingEdit();
+  let screenshot = null, screenshotError = null;
+  try { screenshot = captureViewport(); } catch(error) { screenshotError=error.message; }
+  let study = null; try { study=currentStudy(); } catch { /* Diagnostics remain available if a study cannot be captured. */ }
+  feedbackCapture = {report:feedbackReport(),study,screenshot,createdAt:new Date().toISOString(),previousSummary:structuredClone(state.openedCalculation?.summary)};
+  $('feedback-context').textContent = `Captured revision ${state.project.revision} · ${buildIdentity()} · ${state.selectedIds.length ? state.selectedIds.map(panelId).join(', ') : 'No panels selected'}. This report keeps this captured state.`;
+  $('feedback-expected').value=''; $('feedback-actual').value='';
+  $('feedback-screenshot').checked=false; $('feedback-screenshot').disabled=!screenshot;
+  $('feedback-study').checked=false; $('feedback-study').disabled=!study;
+  $('feedback-preview').hidden=true; if(screenshot) $('feedback-preview').src=screenshot.dataURL;
+  $('feedback-status').textContent=screenshotError || (!study?'Study attachment is unavailable until the source edit can be saved.':'');
+  $('feedback-dialog').showModal();
+});
+$('feedback-screenshot').addEventListener('change', () => { $('feedback-preview').hidden=!$('feedback-screenshot').checked; });
+$('close-feedback').addEventListener('click', () => $('feedback-dialog').close());
+$('download-issue').addEventListener('click', async () => {
+  if (!feedbackCapture || workflowBusy) return;
+  workflowBusy=true; $('download-issue').disabled=true; updateWorkflowControls();
+  try {
+    const pack=await buildFeedbackBundle({report:feedbackCapture.report,createdAt:feedbackCapture.createdAt,previousSummary:feedbackCapture.previousSummary,expected:$('feedback-expected').value,actual:$('feedback-actual').value,
+      screenshot:feedbackCapture.screenshot?.bytes,study:feedbackCapture.study,includeScreenshot:$('feedback-screenshot').checked,includeStudy:$('feedback-study').checked});
+    download(pack.filename,pack.bytes,'application/zip'); $('feedback-status').textContent='Issue package download requested. Nothing was uploaded; review the files before sharing.';
+  } catch(error) { $('feedback-status').textContent=error.message; setStatus(error.message,true); }
+  finally {workflowBusy=false;$('download-issue').disabled=false;updateWorkflowControls();}
+});
+$('export-handoff').addEventListener('click', async () => {
+  finishPendingEdit(); updateExportAvailability(); if($('export-handoff').disabled) return;
+  workflowBusy=true; updateWorkflowControls();
+  try {
+    const study=currentStudy(), result=structuredClone(state.result), modelRevision=state.modelRevision;
+    const layoutOptions={rowWidth:Number($('export-row-width').value),spacing:Number($('export-spacing').value)};
+    setStatus(`Preparing the handoff for revision ${study.project.revision}…`);
+    const {bytes}=await rhinoOperation({operation:'export',cells:result.cells,solids:result.solids,options:{name:study.name,project:study.project,build:study.producer.build,up:study.up,carved:study.carve,...layoutOptions}});
+    verifyRhino6Export(bytes);
+    const pack=await buildHandoffPackage({study,result,rhinoBytes:bytes,layoutOptions});
+    download(pack.filename,pack.bytes,'application/zip');
+    if(state.project.id===study.project.id && state.modelRevision===modelRevision) {
+      state.lastHandoff=pack.lastHandoff;
+      if(state.project.revision===study.project.revision) state.downloadedRevision=study.project.revision;
+      projectUI?.changed({activity:false}); updateWorkspaceChrome();
+    }
+    setStatus(`Handoff revision ${study.project.revision} downloaded: study, Rhino 6 blocks, panel schedule and change list.${state.project.revision!==study.project.revision?' The current design has newer edits.':''}`);
+  } catch(error) { setStatus(`Handoff not downloaded: ${error.message}. The current design is kept.`,true); }
+  finally {workflowBusy=false;updateWorkflowControls();}
+});
+
 function offsetValue(id = state.selected) { return state.panelOffsets.find(entry => entry.id === id)?.offsetMm ?? 0; }
 function setOffsetNotice(message) { $('offset-change-note').textContent = message; $('offset-change-note').hidden = !message; }
-function offsetEditable() { return !!state.layout && state.selectedIds.length === 1 && state.layout.cells.some(cell => cell.id === state.selected) && !state.generating && !cornerPending && !drag; }
+function offsetEditable() { return !!state.layout && state.selectedIds.length === 1 && !state.protectedCellIds.includes(state.selected) && state.layout.cells.some(cell => cell.id === state.selected) && !state.generating && !cornerPending && !drag; }
 function updateOffsetControls() {
   const editable = offsetEditable(), current = offsetValue();
   $('offset-toggle').disabled = !state.ready || !!drag || !!cornerPending || state.generating;
@@ -816,6 +1175,7 @@ function updateOffsetControls() {
   }
   if (drag?.kind === 'offset') return;
   $('offset-status').textContent = state.selectedIds.length !== 1 ? 'Select one panel to offset it.'
+    : state.protectedCellIds.includes(state.selected) ? 'This panel is locked against source edits. Use Unlock edits to change its offset.'
     : state.busy || state.pending ? 'Checking the panels. You can change or reset the distance while waiting.'
     : !state.solved ? 'The calculation did not finish. Your saved offset is kept. Try changing or resetting it; you can still save this study.'
     : `Offset ${current > 0 ? '+' : ''}${current} mm. Positive follows the amber arrow; neighbouring outlines adjust.`;
@@ -831,6 +1191,7 @@ function leaveOffsetMode() {
   state.offsetMode = false; $('offset-toggle').setAttribute('aria-pressed', 'false'); disposeGroup(offsetGroup);
 }
 function enableOffsetMode() {
+  leaveInspection();
   state.offsetMode = true; state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false;
   state.explode = 0; $('explode').value = 0; updateControlLabels();
   for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell']) $(id).setAttribute('aria-pressed', 'false');
@@ -839,6 +1200,7 @@ function enableOffsetMode() {
 function applyPanelOffset(value, before = null) {
   if (!offsetEditable()) return;
   try {
+    assertEditablePanelIds([state.selected]);
     if (value === '' || !Number.isFinite(Number(value))) throw new Error('Enter a distance in millimetres, for example 10 or -10.');
     const offsets = readPanelOffsets([...state.panelOffsets.filter(entry => entry.id !== state.selected), { id: state.selected, offsetMm: Number(value) }], state.layout.cells);
     finishPendingEdit(); before ??= snapshot();
@@ -867,13 +1229,14 @@ $('panel-offset').addEventListener('keydown', event => {
 $('reset-offset').addEventListener('click', () => applyPanelOffset(0));
 $('reset-all-offsets').addEventListener('click', () => {
   if ($('reset-all-offsets').disabled || !state.panelOffsets.length) return;
+  try { assertEditablePanelIds(state.panelOffsets.map(item => item.id)); } catch (error) { setStatus(error.message, true); return; }
   finishPendingEdit(); const before = snapshot(); state.panelOffsets = []; recordEdit(before); requestLayout();
   state.latestAcceptedEdit = { type: 'reset-panel-offsets', revision: state.project.revision };
   $('panel-offset').value = 0; setStatus('All panel offsets reset. Undo restores them.');
 });
 function buildOffsetHandle(preview = null) {
   disposeGroup(offsetGroup);
-  if (!state.offsetMode || state.view !== 'flat' || state.explode || state.selectedIds.length !== 1 || !preview && (!state.solved || state.busy || state.pending)) return;
+  if (!state.offsetMode || state.view !== 'flat' || state.explode || state.selectedIds.length !== 1 || state.protectedCellIds.includes(state.selected) || !preview && (!state.solved || state.busy || state.pending)) return;
   const cell = state.cells.find(cell => cell.id === state.selected), reference = cell?.offsetReference;
   if (!reference) return;
   const normal = vectors(reference.normal), current = offsetValue(), value = preview ?? current;
@@ -935,6 +1298,7 @@ function scheduleEdit() {
   updateExportAvailability(); updateEditAvailability();
 }
 function syncDesignControls() {
+  syncWorkflowControls();
   // An explicitly chosen curvature maximum may exceed the mesh's suggested
   // uniform slider range. Switching the draft back to uniform must retain it.
   $('size').min = Math.min(Number($('size').min), state.size);
@@ -1007,6 +1371,7 @@ function redoEdit() {
 function updateEditAvailability() {
   updateWorkspaceChrome();
   updateOffsetControls();
+  updateWorkflowControls();
   $('stage').classList.toggle('is-calculating', state.generating || state.busy || !!state.pending);
   const waiting = state.generating || state.busy || !!state.pending || !state.solved || !!cornerPending || directDrag();
   $('undo-move').disabled = !state.history.length && !pendingEdit && !cornerPending;
@@ -1039,6 +1404,7 @@ function updateEditAvailability() {
   }
 }
 function validateMergeSelection() {
+  assertEditablePanelIds(state.selectedIds);
   if (!state.directBase) return createMergeGroups(state.result?.surfaceCells || [], state.mergeGroups, state.selectedIds);
   const selected = new Set(state.selectedIds), cells = new Map(state.cells.map(cell => [cell.id, cell]));
   if (selected.size < 2 || [...selected].some(id => !cells.has(id))) throw new Error('Select at least two cells to merge.');
@@ -1049,6 +1415,7 @@ function validateMergeSelection() {
   if (reached.size !== selected.size) throw new Error('Select cells connected by shared edges.');
 }
 $('multi-select').addEventListener('click', () => {
+  leaveInspection();
   leaveOffsetMode();
   cancelCornerPending();
   state.multiSelect = !state.multiSelect;
@@ -1064,7 +1431,7 @@ $('merge-cells').addEventListener('click', () => {
   if (state.busy || !state.solved || cornerPending || drag || state.view === 'reference') return;
   finishPendingEdit();
   try {
-    if (state.directBase || state.pattern.type !== 'organic') {
+    if (state.directBase || state.protectedCellIds.length || state.pattern.type !== 'organic') {
       validateMergeSelection();
       commitDirectEdit({ type: 'merge-cells', cellIds: [...state.selectedIds] }, snapshot());
       return;
@@ -1094,8 +1461,9 @@ document.addEventListener('keydown', event => {
 
 function updateViewportHint() {
   updateWorkspaceChrome();
-  junctionGroup.visible = !state.cornerMode;
-  $('viewport-hint').textContent = state.view === 'reference' ? 'Drag to orbit · Scroll to zoom'
+  junctionGroup.visible = !state.cornerMode && !state.inspection;
+  $('viewport-hint').textContent = state.inspection ? 'Joint inspection · Cutaway changes only the view · Show all or Esc to return'
+    : state.view === 'reference' ? 'Drag to orbit · Scroll to zoom'
     : state.offsetMode ? 'Select one panel · Drag the amber handle · Release to check neighbours · Esc cancels'
     : state.splitMode ? 'Drag within the selected cell to draw a divider · Release to apply · Esc cancels'
     : state.cornerMode ? 'Drag a corner · Alt suppresses snapping · Release to apply · Esc cancels'
@@ -1139,6 +1507,8 @@ function cancelCentreDrag() {
     state.requested++; state.pending = null;
     if (JSON.stringify(restored) === JSON.stringify(moved.before.design)) {
       Object.assign(state, moved.derivedBefore); state.solved = true;
+      $('calculation-comparison').textContent = moved.calculationText;
+      refreshProjectLimits();
       setBusy(state.busy);
     } else requestLayout(); // Preserve any separately entered setting.
   }
@@ -1147,6 +1517,7 @@ function cancelCentreDrag() {
 function resetInteraction() {
   const generating = state.generating, moving = !!drag || !!cornerPending;
   cancelGeneration(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
+  state.inspection = null; clearInspectionDisplay(); endCheckpointComparison(false);
   // Escape ends the editing tool, but retains an entered slider value.
   finishPendingEdit();
   state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false; state.offsetMode = false;
@@ -1182,6 +1553,7 @@ async function commitDirectEdit(transaction, before) {
   try {
     const { layout, change, surface } = await validateDesignGeometry({ model: state.model, layout: state.layout, transaction });
     if (sequence !== cornerSequence || modelRevision !== state.modelRevision || JSON.stringify(captureDesign(state)) !== JSON.stringify(before.design)) return;
+    assertProtectedLayoutUnchanged(state.layout, layout, state.protectedCellIds);
     cornerPending = null;
     if (JSON.stringify(layout) === JSON.stringify(state.layout)) {
       $('corner-status').textContent = 'The layout is unchanged.';
@@ -1219,6 +1591,7 @@ async function commitDirectEdit(transaction, before) {
   }
 }
 $('corner-toggle').addEventListener('click', () => {
+  leaveInspection();
   leaveOffsetMode();
   finishPendingEdit(); cancelCornerPending();
   state.cornerMode = !state.cornerMode || state.view === 'reference' || state.explode !== 0;
@@ -1236,6 +1609,8 @@ $('corner-toggle').addEventListener('click', () => {
 });
 $('split-cell').addEventListener('click', () => {
   if ($('split-cell').disabled) return;
+  try { assertEditablePanelIds(state.selectedIds); } catch (error) { setStatus(error.message,true); return; }
+  leaveInspection();
   leaveOffsetMode();
   finishPendingEdit(); cancelCornerPending();
   state.splitMode = !state.splitMode;
@@ -1259,6 +1634,7 @@ function paintSplitPreview() {
 }
 $('reset-corners').addEventListener('click', () => {
   finishPendingEdit(); cancelCornerPending();
+  if (state.protectedCellIds.length) { setStatus('Unlock source edits before resetting the layout. Your locked cells are kept.', true); return; }
   if (state.directBase) {
     const before = snapshot(); state.layout = state.directBase; state.directBase = null; state.lastLayoutChange = null;
     clearAffectedOffsets([], state.layout);
@@ -1307,7 +1683,7 @@ renderer.domElement.addEventListener('pointerdown', event => {
     }
   }
   if (state.splitMode && state.view === 'surface' && canArrange()) {
-    const hit = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
+    const hit = panelHits()[0];
     if (hit && hit.object.userData.cellId === state.selected && state.selectedIds.length === 1) {
       finishPendingEdit();
       drag = { kind: 'split', cellId: state.selected, start: hit.point.toArray(), end: hit.point.toArray(),
@@ -1322,10 +1698,11 @@ renderer.domElement.addEventListener('pointerdown', event => {
   if (state.cornerMode && cornerGroup.visible && canArrange()) {
     const hit = raycaster.intersectObjects(cornerGroup.children)[0];
     const surfaceHit = state.view === 'surface' ? sourceMesh && raycaster.intersectObject(sourceMesh)[0]
-      : raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
+      : panelHits()[0];
     const radius = Math.max(...state.analysis.dimensions) * .006;
     if (hit && (!surfaceHit || hit.distance <= surfaceHit.distance + radius * 2)) {
       const corner = arrangementCorners().find(value => value.id === hit.object.userData.cornerId);
+      try { assertEditablePanelIds(corner.cells); } catch (error) { setStatus(error.message, true); event.stopImmediatePropagation(); event.preventDefault(); return; }
       finishPendingEdit();
       const displayStart = hit.object.position.clone();
       const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), displayStart);
@@ -1359,6 +1736,7 @@ renderer.domElement.addEventListener('pointerdown', event => {
   if (!hit || (state.view === 'surface' && surfaceHit && hit.distance > surfaceHit.distance + state.size * 0.1)) return;
   if (hit.object.userData.cellHandle) {
     const handle = hit.object.userData.cellHandle;
+    try { assertEditablePanelIds([handle.cellId]); } catch (error) { setStatus(error.message, true); event.stopImmediatePropagation(); event.preventDefault(); return; }
     const sourceStart = vectors(handle.position), displayStart = hit.object.position.clone();
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), displayStart);
     const pointerStart = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
@@ -1379,7 +1757,9 @@ renderer.domElement.addEventListener('pointerdown', event => {
   const seed = state.seeds.find(s => s.id === hit.object.userData.seedId);
   finishPendingEdit();
   drag = { seed, dot: hit.object, before: snapshot(), changed: false, pointerId: event.pointerId, modelRevision: state.modelRevision,
-    derivedBefore: { result: state.result, cells: state.cells, analysis: state.analysis, sourceSurface: state.sourceSurface, lastLayoutChange: state.lastLayoutChange } };
+    calculationText: $('calculation-comparison').textContent,
+    derivedBefore: { result: state.result, cells: state.cells, analysis: state.analysis, sourceSurface: state.sourceSurface, lastLayoutChange: state.lastLayoutChange,
+      lastCalculation: state.lastCalculation, comparison: state.comparison } };
   selectCell(seed.id); controls.enabled = false;
   renderer.domElement.setPointerCapture(event.pointerId);
   viewport.style.cursor = 'grabbing';
@@ -1399,7 +1779,7 @@ renderer.domElement.addEventListener('pointermove', event => {
     event.stopImmediatePropagation(); event.preventDefault(); return;
   }
   if (drag?.kind === 'split') {
-    const hit = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
+    const hit = panelHits()[0];
     const point = hit?.object.userData.cellId === drag.cellId ? hit.point : raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
     if (point) {
       drag.end = point.toArray(); drag.changed = point.distanceTo(vectors(drag.start)) > 1e-4; drag.previewDirty = true;
@@ -1473,7 +1853,7 @@ renderer.domElement.addEventListener('pointermove', event => {
   const dot = !state.generating && (state.cornerMode && cornerGroup.visible && !cornerPending && raycaster.intersectObjects(cornerGroup.children)[0]
     || state.edit && !state.multiSelect && !event.shiftKey && canArrange() && seedGroup.visible && raycaster.intersectObjects(seedGroup.children)[0]);
   viewport.style.cursor = state.splitMode && state.view === 'surface' ? 'crosshair' : dot ? 'grab' : 'default';
-  const hovered = raycaster.intersectObjects(cellGroup.children.filter(o => o.isMesh))[0]?.object.userData.cellId ?? null;
+  const hovered = panelHits()[0]?.object.userData.cellId ?? null;
   if (hovered !== hoverId) {
     hoverId = hovered;
     for (const object of cellGroup.children) if (object.isMesh) object.material.emissive.set(object.userData.cellId === hoverId ? '#17170e' : '#000000');
@@ -1506,7 +1886,7 @@ function endDrag(event) {
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     event.stopImmediatePropagation(); event.preventDefault();
   } else if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) < 5 && state.view !== 'reference') {
-    cast(event); const hit = raycaster.intersectObjects(cellGroup.children.filter(o => o.isMesh))[0];
+    cast(event); const hit = panelHits()[0];
     if (hit) selectCell(hit.object.userData.cellId, event.shiftKey || state.multiSelect);
   }
   down = null;
@@ -1520,6 +1900,7 @@ function cancelGeneration() {
 }
 async function freshLayout({ applySettings = false } = {}) {
   if (state.generating || !state.ready || state.busy || !state.solved || drag || cornerPending) return;
+  if (state.protectedCellIds.length) { setStatus('Unlock source edits before creating a new arrangement. Your locked cells are kept.', true); return; }
   finishPendingEdit();
   const before = snapshot(), modelRevision = state.modelRevision, sequence = ++generationSequence;
   const candidate = captureDesign(state);
@@ -1595,6 +1976,7 @@ document.querySelectorAll('[data-size]').forEach(button => button.addEventListen
 $('regenerate').addEventListener('click', () => freshLayout({ applySettings: true }));
 $('reset-layout').addEventListener('click', () => freshLayout());
 $('edit-toggle').addEventListener('click', () => {
+  leaveInspection();
   leaveOffsetMode();
   cancelCornerPending();
   state.edit = !state.edit;
@@ -1614,10 +1996,11 @@ document.querySelectorAll('[data-camera-view]').forEach(button => button.addEven
   cancelCornerDrag(); cancelCornerPending(); fitView(button.dataset.cameraView); projectUI?.viewChanged();
 }));
 document.querySelectorAll('[data-browser-view]').forEach(button => button.addEventListener('click', () => showView(button.dataset.browserView)));
-$('explode').addEventListener('input', () => { leaveOffsetMode(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
+$('explode').addEventListener('input', () => { leaveInspection(); leaveOffsetMode(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
 $('explode').addEventListener('change', () => fitView(null));
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   cancelCornerDrag(); cancelCornerPending();
+  if (['surface','reference'].includes(button.dataset.view)) leaveInspection();
   state.view = button.dataset.view;
   if (state.view !== 'flat') leaveOffsetMode();
   if (state.view !== 'surface') { state.splitMode = false; $('split-cell').setAttribute('aria-pressed', 'false'); }
@@ -1678,8 +2061,10 @@ function updatePanelDiagnostics(waiting) {
     button.textContent = `${panelId(problem.id)} · ${problem.stage}`;
     button.setAttribute('aria-pressed', String(problem.id === state.selected));
     button.addEventListener('click', () => { showView(problem.stage === 'Outline' ? 'flat' : 'solid'); selectCell(problem.id); });
+    const inspect = document.createElement('button'); inspect.type = 'button'; inspect.className = 'button'; inspect.textContent = 'Inspect this joint';
+    inspect.addEventListener('click', () => inspectJoint(problem.id));
     note.textContent = problem.issues.join(' ') || 'No usable geometry was produced.';
-    item.append(button, note); $('panel-problem-list').append(item);
+    item.append(button, inspect, note); $('panel-problem-list').append(item);
   }
 }
 function updateExportAvailability() {
@@ -1713,6 +2098,7 @@ function updateExportAvailability() {
   $('export-selected-obj').title = waiting ? waitingReason : !selected ? 'Select a panel first.' : $('export-selected-obj').disabled ? 'This panel is unresolved. See its diagnostic note or use Rhino repair.' : 'Export the selected panel.';
   $('export-obj').childNodes.forEach(n => { if (n.nodeType === Node.TEXT_NODE && n.textContent.trim()) n.textContent = state.view === 'surface' ? '3D cell layout ' : state.view === 'solid' ? '3D solid panels ' : '3D flat panels '; });
   updatePanelDiagnostics(waiting);
+  updateWorkflowControls();
 }
 async function exportRhino(repair = false) {
   finishPendingEdit();

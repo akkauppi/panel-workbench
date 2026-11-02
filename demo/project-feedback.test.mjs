@@ -143,6 +143,38 @@ test('diagnostic report also works before a calculation exists and caps ID lists
   assert.doesNotMatch(JSON.stringify(report), /secret-project|\/home|private.test/);
 });
 
+test('diagnostics include only validated project limits and protected panel numbers', () => {
+  const report = createDiagnosticReport({ settings: {
+    projectLimits: { stockWidthMm: 1220, stockHeightMm: 2440, minEdgeMm: 15, maxDeviationMm: 25,
+      privateName: 'private-project', source: { positions: [[1, 2, 3]] }, path: '/home/private' },
+    protectedCellIds: [7, 0, 2], privateName: 'private-project', checkpoints: [{ name: 'private-alternative' }],
+  } });
+  assert.deepEqual(report.settings, {
+    projectLimits: { stockWidthMm: 1220, stockHeightMm: 2440, minEdgeMm: 15, maxDeviationMm: 25 },
+    protectedCellIds: [0, 2, 7],
+  });
+  assert.doesNotMatch(JSON.stringify(report), /private|positions|checkpoints|path/);
+  for (const projectLimits of [[], 'private-project', { stockWidthMm: 1220 }, { minEdgeMm: -1 },
+    { maxDeviationMm: NaN }, { maxDeviationMm: 1e8 }, { minEdgeMm: '15' }]) {
+    const settings = createDiagnosticReport({ settings: { projectLimits, protectedCellIds: [2] } }).settings;
+    assert.deepEqual(settings, { protectedCellIds: [2] });
+  }
+  for (const protectedCellIds of ['private-project', { ids: [1], path: '/home/private' }, [1, 1], [-1], [1.5], [NaN], Array.from({ length: 501 }, (_, i) => i)]) {
+    const settings = createDiagnosticReport({ settings: { projectLimits: { minEdgeMm: 0 }, protectedCellIds } }).settings;
+    assert.deepEqual(settings, { projectLimits: { stockWidthMm: null, stockHeightMm: null, minEdgeMm: 0, maxDeviationMm: null } });
+  }
+  assert.deepEqual(createDiagnosticReport({ settings: { projectLimits: {}, protectedCellIds: [] } }).settings, {});
+});
+
+test('diagnostics retain checkpoint event types while omitting checkpoint names and designs', () => {
+  for (const type of ['create-checkpoint', 'delete-checkpoint']) {
+    const report = createDiagnosticReport({ latestAcceptedEdit: { type, revision: 12, name: 'private-alternative',
+      checkpointId: 'private-checkpoint', study: { rawModel: result() }, path: '/home/private' } });
+    assert.deepEqual(report.latestAcceptedEdit, { type, revision: 12 });
+    assert.doesNotMatch(JSON.stringify(report), /private|rawModel/);
+  }
+});
+
 test('diagnostics retain safe graph corner handles and authored document event types', () => {
   for (const type of ['edit', 'history', 'orientation', 'preference', 'reserve-panel-id']) {
     const report = createDiagnosticReport({ latestAcceptedEdit: { type, cornerId: 'vertex:v123', revision: 8 },

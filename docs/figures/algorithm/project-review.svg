@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 420" role="img" aria-labelledby="title description">
+  <title id="title">A reviewable shell design workflow</title>
+  <desc id="description">Keep a named checkpoint, inspect a local joint and project limits, then package the matching editable study and exact Rhino geometry. A separate feedback package includes notes and only the attachments the designer chooses.</desc>
+  <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#53718e"/></marker></defs>
+  <rect width="1120" height="420" fill="#f7f9fc"/>
+  <g font-family="Arial,sans-serif" fill="#243b50">
+    <text x="32" y="38" font-size="24" font-weight="bold">Keep the design, the evidence and the handoff together</text>
+    <g stroke="#b8c8d8" fill="white">
+      <rect x="32" y="66" width="310" height="204" rx="10"/>
+      <rect x="404" y="66" width="310" height="204" rx="10"/>
+      <rect x="776" y="66" width="312" height="204" rx="10"/>
+    </g>
+    <g stroke="#53718e" stroke-width="3" marker-end="url(#arrow)"><path d="M350 166H393"/><path d="M722 166H765"/></g>
+    <text x="52" y="99" font-size="19" font-weight="bold">1. Keep an alternative</text>
+    <rect x="56" y="118" width="258" height="43" rx="4" fill="#e7eff8"/>
+    <text x="70" y="145" font-size="17">Approved arrangement</text>
+    <rect x="56" y="171" width="258" height="43" rx="4" fill="#e7eff8"/>
+    <text x="70" y="198" font-size="17">Offset experiment</text>
+    <text x="56" y="246" font-size="15">Checkpoints travel with the study.</text>
+    <text x="424" y="99" font-size="19" font-weight="bold">2. Inspect the change</text>
+    <path d="M435 190 472 126 551 149 530 220ZM551 149 616 119 681 177 611 219 530 220Z" fill="#d5e3f1" stroke="#6685a4" stroke-width="2"/>
+    <path d="M551 149 530 220" stroke="#c16b18" stroke-width="6"/>
+    <circle cx="551" cy="149" r="6" fill="#c16b18"/>
+    <text x="424" y="246" font-size="15">Locate a joint; check practical limits.</text>
+    <text x="796" y="99" font-size="19" font-weight="bold">3. Hand off one revision</text>
+    <g font-size="17">
+      <text x="802" y="137">study.json</text><text x="802" y="165">model.3dm</text>
+      <text x="802" y="193">panel-schedule.csv</text><text x="802" y="221">manifest.json + README</text>
+    </g>
+    <text x="796" y="246" font-size="15">Exact files with matching revision IDs.</text>
+    <rect x="32" y="302" width="1056" height="86" rx="10" fill="#fff4df" stroke="#d5b881"/>
+    <text x="52" y="333" font-size="18" font-weight="bold">When something needs discussion</text>
+    <text x="52" y="362" font-size="17">Expected result + actual result + captured panel IDs. Screenshot and study are separate opt-in attachments.</text>
+  </g>
+</svg>

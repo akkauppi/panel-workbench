@@ -1,5 +1,9 @@
 import { CURVATURE_SIZING_FEATURE } from './generator-policy.js';
 import { PANEL_OFFSETS_FEATURE } from './panel-offsets.js';
+import { CHECKPOINTS_FEATURE } from './checkpoints.js';
+import { PROJECT_LIMITS_FEATURE, hasProjectLimits } from './project-limits.js';
+import { EDIT_LOCKS_FEATURE } from './edit-locks.js';
+import { HANDOFF_HISTORY_FEATURE } from './handoff-record.js';
 
 /** Project metadata and transport limits are independent of geometry history.
  * Engine identifiers describe calculation implementations, not file schemas.
@@ -10,7 +14,8 @@ export const MAX_STUDY_BYTES = 128 * 1024 * 1024;
 export const CURRENT_ENGINES = Object.freeze({
   sourceLayout: 'authored-source-v1', fittedPanels: 'shared-planes-v1', panelSolids: 'panel-stock-v1',
 });
-export const SUPPORTED_FEATURES = Object.freeze(['source-layout', 'direct-layout', 'split-ancestry', 'retired-panel-ids', CURVATURE_SIZING_FEATURE, PANEL_OFFSETS_FEATURE]);
+export const SUPPORTED_FEATURES = Object.freeze(['source-layout', 'direct-layout', 'split-ancestry', 'retired-panel-ids', CURVATURE_SIZING_FEATURE, PANEL_OFFSETS_FEATURE,
+  CHECKPOINTS_FEATURE, PROJECT_LIMITS_FEATURE, EDIT_LOCKS_FEATURE, HANDOFF_HISTORY_FEATURE]);
 
 export function utf8Bytes(text) {
   if (typeof text !== 'string') throw new Error('The project must be JSON text.');
@@ -83,7 +88,11 @@ export function requiredStudyFeatures(study) {
   const adaptive = study.generatorPolicy != null || study.layout?.recipe?.generatorPolicy != null || study.directBase?.recipe?.generatorPolicy != null;
   return ['source-layout', ...(study.layout?.authority === 'graph' ? ['direct-layout'] : []),
     ...(study.layout?.version === 3 ? ['split-ancestry'] : []), 'retired-panel-ids', ...(adaptive ? [CURVATURE_SIZING_FEATURE] : []),
-    ...(study.panelOffsets?.length ? [PANEL_OFFSETS_FEATURE] : [])];
+    ...(study.panelOffsets?.length ? [PANEL_OFFSETS_FEATURE] : []),
+    ...(hasProjectLimits(study.projectLimits) ? [PROJECT_LIMITS_FEATURE] : []),
+    ...(study.protectedCellIds?.length ? [EDIT_LOCKS_FEATURE] : []),
+    ...(study.checkpoints?.length ? [CHECKPOINTS_FEATURE] : []),
+    ...(study.lastHandoff != null ? [HANDOFF_HISTORY_FEATURE] : [])];
 }
 
 export function readRequiredFeatures(input, study) {

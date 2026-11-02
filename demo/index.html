@@ -53,6 +53,7 @@
           <div class="ribbon-group-content">
             <button id="import-model" class="ribbon-command ribbon-large" type="button" aria-label="Open OBJ or Rhino 3DM source" title="Open OBJ or Rhino 3DM source"><svg><use href="#i-folder"></use></svg><span>Open mesh</span></button>
             <button id="load-study" class="ribbon-command ribbon-large" type="button" aria-label="Open saved study" title="Open saved study"><svg><use href="#i-folder"></use></svg><span>Open study</span></button>
+            <button id="open-checkpoints" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-folder"></use></svg>Checkpoints</button>
           </div>
           <div class="ribbon-group-caption">Open <button class="info-button" type="button" popovertarget="import-info" aria-label="About source import"><svg><use href="#i-info"></use></svg></button></div>
         </div>
@@ -92,6 +93,7 @@
             <button id="split-cell" class="ribbon-command ribbon-large" type="button" aria-pressed="false" disabled=""><svg><use href="#i-corner"></use></svg>Divide cell</button>
             <button id="merge-cells" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-merge"></use></svg>Merge selected</button>
             <button id="clear-selection" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-clear"></use></svg>Clear</button>
+            <button id="lock-selected" class="ribbon-command ribbon-large" type="button" disabled title="Protect selected source cells from direct edits; fitted geometry may still change"><svg><use href="#i-select"></use></svg>Lock edits</button>
           </div>
           <div class="ribbon-group-caption">Selection</div>
         </div>
@@ -99,10 +101,10 @@
           <div class="ribbon-group-content">
             <div class="ribbon-stack">
               <button id="reset-corners" class="ribbon-command ribbon-small" type="button" disabled="">Reset corners</button>
-              <button id="reset-layout" class="ribbon-command ribbon-small" type="button">Reset cell edits</button>
+              <button id="reset-layout" class="ribbon-command ribbon-small" type="button" title="Regenerate from applied layout settings, clearing moves, merges, divisions and offsets. Undo restores your work.">Reset cell edits</button>
             </div>
           </div>
-          <div class="ribbon-group-caption">Reset</div>
+          <div class="ribbon-group-caption">Reset <button class="info-button" type="button" popovertarget="reset-info" aria-label="About resetting edits"><svg><use href="#i-info"></use></svg></button></div>
         </div>
         <div class="ribbon-group ribbon-guidance-group">
           <div class="ribbon-group-content">
@@ -230,6 +232,13 @@
       <section id="ribbon-panel-view" class="ribbon-panel" role="tabpanel" data-ribbon-panel="view" aria-labelledby="ribbon-tab-view" hidden="">
         <div class="ribbon-group">
           <div class="ribbon-group-content">
+            <button id="inspect-joint" class="ribbon-command ribbon-large" type="button" disabled><svg><use href="#i-select"></use></svg>Inspect joint</button>
+            <button id="show-all-panels" class="ribbon-command ribbon-large" type="button" disabled><svg><use href="#i-clear"></use></svg>Show all</button>
+          </div>
+          <div class="ribbon-group-caption">Focused inspection</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-group-content">
             <div id="color-tabs" class="segmented" role="group" aria-label="Panel colouring">
               <button type="button" data-color="timber" class="is-active" aria-pressed="true">Material</button>
               <button type="button" data-color="fit" aria-pressed="false">Surface fit</button>
@@ -278,6 +287,7 @@
         <div class="ribbon-group export-section">
           <div class="ribbon-group-content">
             <button id="export-rhino" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Rhino production <span class="file-type">3DM</span></button>
+            <button id="export-handoff" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Handoff package <span class="file-type">ZIP</span></button>
             <button id="export-rhino-repair" class="ribbon-command ribbon-large" type="button" aria-describedby="export-availability"><svg><use href="#i-download"></use></svg>Rhino repair <span class="file-type">3DM</span></button>
             <button id="export-obj" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>3D panels <span class="file-type">OBJ</span></button>
             <button id="export-stl" class="ribbon-command ribbon-large" type="button"><svg><use href="#i-download"></use></svg>Solid panels <span class="file-type">STL</span></button>
@@ -357,6 +367,15 @@
       <p>Choose <strong>New arrangement</strong> to apply the range. This replaces the current layout; Undo restores it. Opening a saved project or changing stock settings keeps its accepted layout.</p>
       <p>If the range needs more than 240 cells, increase the target sizes. Sharp creases and noisy meshes still need review.</p>
     </div>
+    <div id="reset-info" class="format-info" popover role="note" aria-labelledby="reset-info-title">
+      <button class="info-close" type="button" popovertarget="reset-info" popovertargetaction="hide" aria-label="Close reset information">×</button>
+      <h2 id="reset-info-title">Return to an earlier arrangement</h2>
+      <p><strong>Undo (Ctrl/Cmd+Z):</strong> step back through edits in this session. Redo brings them back.</p>
+      <p><strong>Reset cell edits:</strong> regenerate from the applied layout settings, clearing moved centres and corners, merges, divisions and panel offsets. The source shell and material settings stay intact. Undo restores the previous layout.</p>
+      <p><strong>Reset direct edits:</strong> restore the layout from before the first direct edit, keeping earlier edits. This button is called Reset corners for older corner-only edits, where merges are kept.</p>
+      <p><strong>Panel offset → Reset:</strong> clear only that panel's offset. Reset all panel offsets keeps the source layout.</p>
+      <p><strong>File → Checkpoints → Restore:</strong> return to a named saved design, including its settings. This can be undone. Unlock source edits before using a whole-layout reset.</p>
+    </div>
     <div id="import-info" class="format-info" popover role="note" aria-labelledby="import-info-title">
       <button class="info-close" type="button" popovertarget="import-info" popovertargetaction="hide" aria-label="Close import information">×</button>
       <h2 id="import-info-title">What can I import?</h2>
@@ -417,6 +436,19 @@
             <span class="palette-unit">mm</span>
           </header>
           <div class="properties-scroll">
+            <p id="lock-status" class="workflow-notice control-hint" hidden></p>
+            <button id="unlock-all" type="button" class="button workflow-unlock" hidden>Unlock all source edits</button>
+            <div id="inspection-tools" class="workflow-inspection" hidden>
+              <strong id="inspection-title">Joint inspection</strong>
+              <p id="inspection-note" class="control-hint" role="status"></p>
+              <p id="inspection-measurements" class="control-hint"></p>
+              <label class="checkbox-row"><input id="section-enabled" type="checkbox"><span>Cutaway view</span></label>
+              <label for="section-position">Section position</label>
+              <input id="section-position" type="range" min="-100" max="100" value="0" step="1" disabled>
+              <div class="workflow-actions"><button id="section-camera" class="button" type="button">Align to view</button><button id="section-flip" class="button" type="button">Flip cutaway</button><button id="close-inspection" class="button" type="button">Show all</button></div>
+              <p class="control-hint">Cutaway affects the display only. It does not trim exports.</p>
+            </div>
+            <div id="checkpoint-comparison" class="workflow-notice" hidden><p id="checkpoint-comparison-note" class="control-hint" role="status"></p><button id="end-checkpoint-comparison" type="button" class="button">End comparison</button></div>
             <button id="reset-all-offsets" type="button" class="button reset-offsets" hidden>Reset all panel offsets</button>
             <p id="offset-change-note" class="control-hint" role="status" hidden></p>
             <div id="selection-empty" class="selection-empty">
@@ -572,6 +604,19 @@
                 <p class="control-hint">Includes unresolved candidates and their reasons. Full solids are included where available; other panels use source patches and outlines.</p>
               </div>
             </details>
+            <details class="property-section" id="project-limits-section">
+              <summary>Project fabrication limits <span id="limit-warning-count" class="group-scope"></span></summary>
+              <div class="workflow-fields">
+                <p class="control-hint">Optional project warnings. Blank means no limit. All distances are millimetres.</p>
+                <label>Stock width<input id="limit-stock-width" type="number" min="1" step="1" placeholder="Not set"></label>
+                <label>Stock length<input id="limit-stock-height" type="number" min="1" step="1" placeholder="Not set"></label>
+                <label>Minimum edge<input id="limit-min-edge" type="number" min="0" step="0.1" placeholder="Not set"></label>
+                <label>Maximum shell deviation<input id="limit-max-deviation" type="number" min="0" step="0.1" placeholder="Not set"></label>
+                <button id="apply-project-limits" type="button" class="button">Apply limits</button>
+                <p id="project-limits-note" class="control-hint" role="status">These warnings do not replace joint, toolpath or material checks.</p>
+                <ul id="project-limit-list" class="panel-problem-list"></ul>
+              </div>
+            </details>
           </div>
         </section>
         <section class="study-browser" aria-labelledby="browser-heading">
@@ -664,7 +709,8 @@
       <label class="checkbox-row" title="Save accepted work in this browser and reopen it next time. Download a study for a portable backup."><input id="local-save-enabled" type="checkbox" checked><span>Save locally and resume</span></label>
       <span id="project-status" role="status">Recovery copies are stored in this browser.</span>
       <button id="recovery-open" type="button" class="button">Recovery</button>
-      <button id="download-feedback" type="button" class="button" title="Download build, revision, panel IDs and checks. Source geometry and project names are excluded.">Download feedback report</button>
+      <button id="report-issue" type="button" class="button">Report an issue</button>
+      <button id="download-feedback" type="button" class="button" title="Download build, revision, panel IDs and checks. Source geometry and project names are excluded.">Download diagnostics</button>
       <p id="local-save-note" class="control-hint" role="status" hidden></p>
     </section>
     <dialog id="recovery-dialog" class="recovery-dialog" aria-labelledby="recovery-title">
@@ -674,6 +720,24 @@
       <p>Opening an older copy retains its revision. Its next edit starts another branch of that project; keep separate downloaded files when comparing alternatives.</p>
       <div id="recovery-list"></div>
       <button id="recovery-close" class="button" type="button">Close</button>
+    </dialog>
+    <dialog id="checkpoints-dialog" class="workflow-dialog" aria-labelledby="checkpoints-heading">
+      <div class="workflow-dialog-heading"><h2 id="checkpoints-heading">Named design checkpoints</h2><button id="close-checkpoints" class="button" type="button">Close</button></div>
+      <p>Keep up to eight named alternatives in this study. Download the study to carry them to another computer. Restoring keeps the current project identity and can be undone.</p>
+      <div class="workflow-actions"><label for="checkpoint-name">Checkpoint name</label><input id="checkpoint-name" type="text" maxlength="80" placeholder="Approved arrangement"><button id="save-checkpoint" class="button" type="button">Save checkpoint</button></div>
+      <p id="checkpoint-status" class="control-hint" role="status"></p><div id="checkpoint-list"></div>
+      <p><a href="https://github.com/akkauppi/panel-workbench/blob/main/docs/project-review-workflow.md" target="_blank" rel="noopener">Project review and handoff · illustrated guide</a></p>
+    </dialog>
+    <dialog id="feedback-dialog" class="workflow-dialog" aria-labelledby="feedback-heading">
+      <div class="workflow-dialog-heading"><h2 id="feedback-heading">Report an issue</h2><button id="close-feedback" class="button" type="button">Close</button></div>
+      <p id="feedback-context"></p>
+      <label for="feedback-expected">What did you expect?</label><textarea id="feedback-expected" maxlength="4000" rows="3"></textarea>
+      <label for="feedback-actual">What happened?</label><textarea id="feedback-actual" maxlength="4000" rows="3"></textarea>
+      <label class="checkbox-row"><input id="feedback-screenshot" type="checkbox"><span>Include this view as a screenshot (contains visible geometry)</span></label>
+      <img id="feedback-preview" alt="Captured workspace view for this report" hidden>
+      <label class="checkbox-row"><input id="feedback-study" type="checkbox"><span>Include the study for reproduction (contains the source model and checkpoints)</span></label>
+      <p class="control-hint">The package is downloaded to your computer. Nothing is uploaded or sent. Review it before sharing.</p>
+      <p id="feedback-status" class="control-hint" role="status"></p><button id="download-issue" class="button button-primary" type="button">Download issue package</button>
     </dialog>
     <footer class="app-footer">
       <span>Synthetic example · Dimensions in mm</span>
