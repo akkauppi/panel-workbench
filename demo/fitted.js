@@ -1,5 +1,6 @@
 import { ShapeUtils, Vector2 } from './vendor/three.core.js';
 import { inspectStockEnvelopes, buildPanelSolids } from './solids.js';
+import { readPanelOffsets } from './panel-offsets.js';
 
 // A shared vertex is solved once for every panel touching it. Independent
 // flattening is deliberately not used here: neighbouring edges remain identical.
@@ -346,6 +347,7 @@ function repairCoupledPlanes({ original, network, anchors, planes, groups, group
   for (const step of [firstStep, firstStep * 4, firstStep * .25]) {
     for (const group of neighboringGroups()) {
       if (metrics.attempts >= budget || !best.bad.size) break;
+      if (groups[group].some(ci => options.fixedPanelIds?.has(original[ci].id))) continue;
       for (const axis of (groupBoundaries[group] ? ['v'] : ['offset', 'u', 'v'])) for (const sign of [-1, 1]) {
         if (metrics.attempts >= budget) break;
         const ci = groups[group][0], old = best.planes[ci], delta = sign * step;
@@ -380,7 +382,66 @@ function repairCoupledPlanes({ original, network, anchors, planes, groups, group
   return { metrics, cells: repairedCells, points: best.points, planes: best.planes, unstable: best.unstable };
 }
 
+/** Offsets are authored against a fresh unoffset fit, never against the last
+ * displayed candidate. Reopening, Undo and repeated edits therefore cannot
+ * accumulate displacement. The source graph remains the authoritative layout. */
 export function fitSharedPanels(result, options = {}) {
+  if (!result?.cells?.length) return result;
+  const offsets = readPanelOffsets(options.panelOffsets, result.surfaceCells || result.cells);
+  const { offsetFeedback: previousOffsetFeedback, ...input } = result;
+  const { offsetPanelCount: previousOffsetCount, offsetCoupledPanelIds: previousCoupledIds, ...sourceStats } = result.stats || {};
+  input.stats = sourceStats;
+  const baseline = fitPanels(input, { ...options, offsetBaseline: undefined, offsetRegion: undefined });
+  const references = new Map(baseline.cells.map(cell => [cell.id, {
+    origin: [...cell.plane.origin], normal: [...cell.plane.normal],
+  }]));
+  let fitted = offsets.length ? fitPanels(input, { ...options, offsetBaseline: baseline, panelOffsets: offsets }) : baseline;
+  if (offsets.length && fitted.stats.invalidCellCount) {
+    const region = coplanarOffsetRegion(baseline, offsets);
+    if (region) {
+      const alternative = fitPanels(input, { ...options, offsetBaseline: baseline, panelOffsets: offsets, offsetRegion: region });
+      // A broad fallback is useful only if it restores every flat panel and
+      // produces valid stock. It never hides a different unresolved region.
+      const stock = Number.isFinite(options.thickness) && options.thickness > 0
+        ? buildPanelSolids(alternative.cells, { thickness: options.thickness, radius: 0, outwardCenter: options.outwardCenter, flipDirection: options.flipDirection }) : [];
+      if (!alternative.stats.invalidCellCount && stock.every(panel => panel.valid)) {
+        fitted = alternative;
+        fitted.stats.offsetCoupledPanelIds = [...region.ids];
+        fitted.offsetFeedback = [`To keep the shared edges flat, this calculation moved ${region.ids.size} panels on the same flat surface together. Use Undo if you wanted a local change.`];
+      }
+    }
+  }
+  const byId = new Map(offsets.map(offset => [offset.id, offset.offsetMm]));
+  for (const cell of fitted.cells) {
+    cell.offsetMm = byId.get(cell.id) || 0;
+    cell.offsetReference = references.get(cell.id);
+  }
+  if (offsets.length) fitted.stats.offsetPanelCount = offsets.length;
+  return fitted;
+}
+
+// A conservative fallback for a genuinely flat connected sheet. The general
+// local solve can be ill-conditioned near zero curvature; a rigid translation
+// is valid only when every authored offset in the component agrees. Never
+// silently translate a curved shell, bridge disconnected components, or erase
+// one of several conflicting offsets.
+function coplanarOffsetRegion(baseline, offsets) {
+  const byId = new Map(baseline.cells.map(cell => [cell.id, cell]));
+  const first = byId.get(offsets[0].id), reference = first.plane;
+  const ids = new Set([first.id]), queue = [first.id];
+  for (let i = 0; i < queue.length; i++) for (const id of byId.get(queue[i]).neighbors || []) if (!ids.has(id) && byId.has(id)) { ids.add(id); queue.push(id); }
+  if (offsets.some(item => !ids.has(item.id))) return null;
+  if ([...ids].some(id => {
+    const cell = byId.get(id);
+    return !cell.valid || Math.abs(dot(cell.plane.normal, reference.normal)) < 1 - 1e-10
+      || cell.flatPositions.some(point => Math.abs(dot(reference.normal, point) - reference.d) > 1e-5);
+  })) return null;
+  const translation = scale(reference.normal, offsets[0].offsetMm);
+  if (offsets.some(item => Math.abs(dot(byId.get(item.id).plane.normal, translation) - item.offsetMm) > 1e-7)) return null;
+  return { ids, translation };
+}
+
+function fitPanels(result, options = {}) {
   if (!result?.cells?.length) return result;
   const original = result.surfaceCells || result.cells;
   const straightness = Math.max(0, Math.min(1, options.straightness ?? .7));
@@ -396,10 +457,43 @@ export function fitSharedPanels(result, options = {}) {
     }
     return point;
   }
+  const offsetBaseline = options.offsetBaseline;
+  const offsetById = new Map((offsetBaseline ? options.panelOffsets : []).map(item => [item.id, item.offsetMm]));
+  const fixedPlanes = new Map();
+  if (offsetBaseline) for (const cell of offsetBaseline.cells) if (offsetById.has(cell.id)) {
+    const plane = cell.plane, origin = add(plane.origin, scale(plane.normal, offsetById.get(cell.id)));
+    fixedPlanes.set(cell.id, { ...plane, origin, d: dot(plane.normal, origin) });
+  }
   const anchors = network.points, faceIds = network.loops.map(rings => [...new Set(rings.flat())]);
-  let positions = anchors.map(p => [...p]);
-  let planes;
+  const affected = new Set(original.flatMap((cell, ci) => offsetById.has(cell.id) ? [ci] : []));
+  const queue = [...affected];
+  for (let i = 0; i < queue.length; i++) for (const id of faceIds[queue[i]]) for (const ci of network.owners[id]) if (!affected.has(ci)) { affected.add(ci); queue.push(ci); }
+  const lockedPlanes = new Map(fixedPlanes);
+  if (offsetBaseline) for (let ci = 0; ci < original.length; ci++) if (!affected.has(ci)) lockedPlanes.set(original[ci].id, offsetBaseline.cells[ci].plane);
+  const affectedVertex = id => [...network.owners[id]].some(ci => affected.has(ci));
+  // Start neighbours near a local displacement instead of leaving them on
+  // parallel baseline planes whose intersections would be undefined. Only
+  // authored planes are fixed; the smooth seed is not a validity relaxation.
+  const solveAnchors = offsetBaseline ? offsetBaseline.sharedVertices.map((point, id) => {
+    if (!affectedVertex(id)) return [...point];
+    if (options.offsetRegion) return add(point, [...network.owners[id]].some(ci => options.offsetRegion.ids.has(original[ci].id)) ? options.offsetRegion.translation : [0, 0, 0]);
+    let displacement = [0, 0, 0], weight = 0;
+    for (const [panelId, plane] of fixedPlanes) {
+      const cell = offsetBaseline.cells.find(cell => cell.id === panelId);
+      const distance = Math.min(...cell.flatPositions.map(vertex => norm(sub(point, vertex))));
+      const radius = Math.max(1, Math.sqrt(cell.area));
+      const influence = Math.exp(-2 * (distance / radius) ** 2);
+      displacement = add(displacement, scale(plane.normal, influence * offsetById.get(panelId)));
+      weight += influence;
+    }
+    return add(point, scale(displacement, 1 / Math.max(1, weight)));
+  }) : anchors;
   const displacementLimit = options.maxDisplacement ?? Math.sqrt(original.reduce((sum, c) => sum + c.area, 0) / original.length) * .75;
+  let positions = solveAnchors.map((point, id) => {
+    const delta = sub(point, anchors[id]), distance = norm(delta);
+    return distance > displacementLimit ? add(anchors[id], scale(delta, displacementLimit / distance)) : [...point];
+  });
+  let planes;
   function compatibleBoundaryGroups(members) {
     for (const rim of network.boundaryComponents) {
       const participating = members.filter(ci => faceIds[ci].some(id => network.boundaryPlanes[id] === rim));
@@ -421,7 +515,7 @@ export function fitSharedPanels(result, options = {}) {
   for (let ci = 0; ci < original.length; ci++) {
     if (groupFor[ci] !== -1) continue;
     const group = [ci], reference = initialPlanes[ci]; groupFor[ci] = groups.length;
-    if (original[ci].maxDeviation < 12) {
+    if (!offsetBaseline && original[ci].maxDeviation < 12) {
       for (let offset = 0; offset < group.length; offset++) {
         const adjacent = new Set(faceIds[group[offset]].flatMap(id => [...network.owners[id]]));
         for (const other of adjacent) {
@@ -439,6 +533,7 @@ export function fitSharedPanels(result, options = {}) {
   let groupIds = groups.map(group => [...new Set(group.flatMap(ci => faceIds[ci]))]);
   let groupOrigins = groups.map(group => scale(group.reduce((sum, ci) => add(sum, original[ci].seed), [0, 0, 0]), 1 / group.length));
   function boundaryLines() {
+    if (offsetBaseline) return groups.map(() => null);
     return groupIds.map((ids, group) => {
       const rims = new Map();
       for (const id of ids) {
@@ -469,7 +564,7 @@ export function fitSharedPanels(result, options = {}) {
     const fitted = groupIds.map((ids, i) => groupBoundaries[i] ? fitAroundBoundary(ids, points, original[groups[i][0]].plane.normal, groupBoundaries[i])
       : planeFor(ids, points, original[groups[i][0]].plane.normal, options.anchorPlanesToSeeds ? groupOrigins[i] : null));
     return original.map((cell, ci) => {
-      const plane = fitted[groupFor[ci]];
+      const plane = lockedPlanes.get(cell.id) || fitted[groupFor[ci]];
       if (dot(plane.normal, cell.plane.normal) >= 0) return plane;
       return { ...plane, normal: scale(plane.normal, -1), v: scale(plane.v, -1), d: -plane.d };
     });
@@ -478,9 +573,9 @@ export function fitSharedPanels(result, options = {}) {
   function relax(count, anneal) {
     for (let iteration = 0; iteration < count; iteration++) {
       planes = fittedPlanes(positions);
-      const regularization = (anneal ? .03 * (1 - iteration / Math.max(1, count)) : 0) + .0001;
+      const regularization = (anneal ? .03 * (1 - iteration / Math.max(1, count)) ** (offsetBaseline ? 3 : 1) : 0) + (offsetBaseline ? 1e-8 : .0001);
       positions = positions.map((point, id) => {
-        const candidate = intersection([...network.owners[id]].map(i => planes[i]), anchors[id], regularization, network.boundaryPlanes[id]);
+        const candidate = intersection([...network.owners[id]].map(i => planes[i]), solveAnchors[id], regularization, network.boundaryPlanes[id]);
         const delta = sub(candidate, anchors[id]), distance = norm(delta);
         const bounded = distance > displacementLimit ? add(anchors[id], scale(delta, displacementLimit / distance)) : candidate;
         return add(scale(point, .2), scale(bounded, .8));
@@ -520,7 +615,7 @@ export function fitSharedPanels(result, options = {}) {
   const initialGroupCount = groups.length;
   const adjacent = original.map((_, ci) => new Set(faceIds[ci].flatMap(id => [...network.owners[id]])));
   const coplanarTolerance = Math.max(1e-6, Math.min(1, planarityTolerance * 4));
-  for (let pass = 0; pass < 3 && iterations > 0; pass++) {
+  for (let pass = 0; pass < 3 && iterations > 0 && !offsetBaseline; pass++) {
     planes = fittedPlanes(positions);
     let joined = false;
     for (let ci = 0; ci < original.length; ci++) for (const other of adjacent[ci]) {
@@ -606,7 +701,7 @@ export function fitSharedPanels(result, options = {}) {
   });
   const boundaryTargets = anchors.map((anchor, id) => {
     const rim = network.boundaryPlanes[id];
-    if (!rim) return null;
+    if (!rim || offsetBaseline) return null;
     const chords = [...new Set([...network.owners[id]].map(ci => groupFor[ci]))].map(group => groupBoundaries[group]).filter(chord => chord?.rim === rim);
     const constraints = chords.map(chord => {
       const normal = normalize(cross(chord.tangent, rim.normal));
@@ -628,7 +723,7 @@ export function fitSharedPanels(result, options = {}) {
         for (const id of ring) { indices.push(flatPositions.length); sourcePositions.push(anchors[id]); flatPositions.push(solved[id]); sharedVertexIds.push(id); }
         loops.push(indices);
       }
-      const issues = [];
+      const issues = [], offsetIssueCodes = [];
       if (source.sourceComponentCount > 1) issues.push('This cell contains separate source-surface pieces and cannot form one panel. Split its source region first.');
       const maxPlanarityError = Math.max(0, ...flatPositions.map(p => Math.abs(dot(plane.normal, p) - plane.d)));
       const maxReferenceDisplacement = Math.max(0, ...sharedVertexIds.map(id => norm(sub(solved[id], anchors[id]))));
@@ -649,6 +744,24 @@ export function fitSharedPanels(result, options = {}) {
           if (dot(cross(sub(b, a), sub(c, a)), plane.normal) < 0) [triangle[1], triangle[2]] = [triangle[2], triangle[1]];
         }
       }
+      if (offsetBaseline) {
+        const authoredMismatch = sharedVertexIds.some(id => [...network.owners[id]].some(owner => {
+          const requested = fixedPlanes.get(original[owner].id);
+          return requested && Math.abs(dot(requested.normal, solved[id]) - requested.d) > Math.min(planarityTolerance, 1e-4);
+        }));
+        if (maxPlanarityError > planarityTolerance || authoredMismatch) {
+          offsetIssueCodes.push('offset-junction');
+          issues.push('The calculation could not make these panels meet at this offset while staying flat. Reduce or reset nearby offsets, or divide a neighbouring cell.');
+        }
+        if (sharedVertexIds.some(id => unstableVertices.has(id))) {
+          offsetIssueCodes.push('offset-distance');
+          issues.push('This offset would push a shared corner too far from the shell. Reduce or reset the offset, or reshape the nearby cells.');
+        }
+        if (flatPositions.some(point => network.boundaryComponents.some(plane => plane.support && (dot(plane.normal, point) - plane.d) * plane.support < -1e-5))) {
+          offsetIssueCodes.push('offset-opening');
+          issues.push('This offset conflicts with an opening in the shell. Reduce or reset the offset, or reshape the cells beside the opening.');
+        }
+      }
       if (!triangles.length) issues.push('This panel has no usable area.');
       const expectedArea = outline2d.length ? Math.abs(area2(outline2d[0])) - outline2d.slice(1).reduce((sum, ring) => sum + Math.abs(area2(ring)), 0) : 0;
       const area = triangles.reduce((sum, ids) => { const [a, b, c] = ids.map(i => flatPositions[i]); return sum + norm(cross(sub(b, a), sub(c, a))) * .5; }, 0);
@@ -660,13 +773,13 @@ export function fitSharedPanels(result, options = {}) {
         sharedVertexIds, supportPlanes: network.boundaryComponents.filter(plane => plane.support), boundaryPlanes: sharedVertexIds.map(id => network.boundaryPlanes[id]), area, sourceArea: source.area, width: max[0] - min[0], height: max[1] - min[1], bounds2d: { min, max },
         loopAreas: outline2d.map(area2), holeCount: Math.max(0, loops.length - 1), maxSeamGap: 0,
         maxDeviation: Math.max(0, ...deviations), rmsDeviation: Math.sqrt(deviations.reduce((sum, d) => sum + d * d, 0) / (deviations.length || 1)),
-        maxPlanarityError, maxReferenceDisplacement, valid: issues.length === 0, issues, fittedShared: true };
+        maxPlanarityError, maxReferenceDisplacement, ...(offsetIssueCodes.length ? { offsetIssueCodes } : {}), valid: issues.length === 0, issues, fittedShared: true };
     });
   }
   let cells = buildCells(solved, planes, unstableVertices), repair = null;
   if (Number.isFinite(options.thickness) && options.thickness > 0 && iterations > 0) {
     const candidate = repairCoupledPlanes({ original, network, anchors, planes, groups, groupFor, adjacent,
-      displacementLimit, planarityTolerance, options, initialCells: cells, buildCells, groupBoundaries, boundaryTargets, initialPoints: solved, initialUnstable: unstableVertices });
+      displacementLimit, planarityTolerance, options: { ...options, fixedPanelIds: new Set(lockedPlanes.keys()) }, initialCells: cells, buildCells, groupBoundaries, boundaryTargets, initialPoints: solved, initialUnstable: unstableVertices });
     repair = candidate.metrics;
     if (candidate.cells) { cells = candidate.cells; solved = candidate.points; planes = candidate.planes; unstableVertices.clear(); for (const id of candidate.unstable) unstableVertices.add(id); }
   }
@@ -692,7 +805,7 @@ export function fitSharedPanels(result, options = {}) {
     const kind = directions.length === 3 ? (Math.max(...angles) > 160 ? 'T' : 'Y') : 'other';
     junctions.push({ position: solved[id], kind, angles, cells: owners.map(ci => cells[ci].id) });
   }
-  const stats = { ...result.stats, ...(repair ? { repair } : {}), planarBoundaryCount: network.boundaryComponents.length, maxBoundaryDisplacement: Math.max(0, ...solved.map(boundaryDistance)), boundaryDisplacementLimit: maxBoundaryApproximation + network.boundaryTolerance, maxBoundaryApproximation, maxBoundaryAdjustment: Math.max(0, ...solved.map(boundaryAdjustment)), boundaryAdjustmentLimit: network.boundaryTolerance,
+  const stats = { ...result.stats, ...(repair ? { repair } : {}), planarBoundaryCount: network.boundaryComponents.length, maxBoundaryDisplacement: Math.max(0, ...solved.map(boundaryDistance)), boundaryDisplacementLimit: offsetBaseline ? displacementLimit : maxBoundaryApproximation + network.boundaryTolerance, maxBoundaryApproximation, maxBoundaryAdjustment: Math.max(0, ...solved.map(boundaryAdjustment)), boundaryAdjustmentLimit: network.boundaryTolerance,
     maxSeamGap: 0, rmsSeamGap: 0, maxPlanarityError: Math.max(...cells.map(c => c.maxPlanarityError)),
     maxReferenceDisplacement: Math.max(...cells.map(c => c.maxReferenceDisplacement)),
     maxDeviation: Math.max(...cells.map(c => c.maxDeviation)),

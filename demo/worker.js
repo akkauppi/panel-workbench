@@ -28,7 +28,7 @@ export function createWorkerHandler(postMessage) {
       const { seeds, surface, layout } = resolveSourceLayout(model, data);
       const analysis = analyzeModel(model);
       const result = fitSharedPanels(surface, { straightness: data.straightness ?? 0.7, iterations: 700,
-        thickness: data.thickness ?? 40, outwardCenter: analysis.center, flipDirection: !!data.flipOutside });
+        panelOffsets: data.panelOffsets, thickness: data.thickness ?? 40, outwardCenter: analysis.center, flipDirection: !!data.flipOutside });
       for (const cell of result.cells) cell.polygonQuality = inspectPolygon(cell.outline2d);
       result.quality = measureLayoutQuality(result.cells);
       result.solids = buildPanelSolids(result.cells, { thickness: data.thickness ?? 40, radius: data.roundover ?? 2,

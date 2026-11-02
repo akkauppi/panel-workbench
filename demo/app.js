@@ -14,6 +14,8 @@ import { initProjectUI } from './project-ui.js';
 import { computeExplodedOffsets } from './explode.js';
 import { assemblyGuideCorners } from './assembly-guides.js';
 import { readGeneratorPolicy } from './generator-policy.js';
+import { readPanelOffsets, reconcilePanelOffsets } from './panel-offsets.js';
+import { describePanelProblems } from './panel-diagnostics.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
@@ -26,7 +28,7 @@ const $ = id => document.getElementById(id);
 const state = {
   rawModel: null, model: null, analysis: null, seeds: [], cells: [], result: null, layout: null, sourceSurface: null,
   name: 'Synthetic example', view: 'surface', color: 'timber', selected: null, selectedIds: [], multiSelect: false, mergeGroups: [],
-  cornerEdits: [], cornerMode: false, splitMode: false, nextCellId: 0, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
+  cornerEdits: [], cornerMode: false, splitMode: false, offsetMode: false, panelOffsets: [], nextCellId: 0, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
   size: Number($('size').value), variation: Number($('variation').value) / 100,
   pattern: readPattern(), generatorPolicy: null, generating: false,
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
@@ -65,6 +67,7 @@ const cellGroup = new THREE.Group(), seedGroup = new THREE.Group(), referenceGro
 const junctionGroup = new THREE.Group(), cornerGroup = new THREE.Group(), cornerGuide = new THREE.Group();
 const cornerSketchGroup = new THREE.Group(), fittingGroup = new THREE.Group(), assemblyGuideGroup = new THREE.Group();
 scene.add(cellGroup, seedGroup, referenceGroup, junctionGroup, cornerGroup, cornerGuide, cornerSketchGroup, fittingGroup, assemblyGuideGroup);
+const offsetGroup = new THREE.Group(); scene.add(offsetGroup);
 let sourceMesh, grid, seedGeometry, seedMaterial;
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 const worker = new Worker('./worker.js', { type: 'module' });
@@ -158,7 +161,7 @@ function updateWorkspaceChrome() {
   $('project-revision').textContent = state.project ? `Revision ${state.project.revision}` : 'New project';
   document.title = `${state.name} — Panel Workbench`;
   $('view-name').textContent = viewNames[state.view];
-  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
+  $('active-tool-name').textContent = state.view === 'reference' ? 'Inspect source' : state.offsetMode ? 'Offset panel' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
   $('ribbon-selection-context').textContent = state.selectedIds.length > 1 ? `${state.selectedIds.length} cells selected`
     : state.selected != null ? `Cell ${panelId(state.selected)}` : 'No selection';
   for (const button of document.querySelectorAll('[data-browser-view]')) {
@@ -210,7 +213,7 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
   if (!state.model) return;
   cancelCornerDrag();
   cancelCornerPending();
-  if (fresh) { state.seeds = []; state.mergeGroups = []; state.cornerEdits = []; state.layout = null; state.directBase = null; state.lastLayoutChange = null; state.selectedCorner = null; state.selected = null; state.selectedIds = []; }
+  if (fresh) { state.panelOffsets = []; state.seeds = []; state.mergeGroups = []; state.cornerEdits = []; state.layout = null; state.directBase = null; state.lastLayoutChange = null; state.selectedCorner = null; state.selected = null; state.selectedIds = []; }
   if (!preserveSource) state.sourceSurface = null;
   state.requested++;
   state.solved = false;
@@ -220,6 +223,7 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
     size: state.size, variation: state.variation, randomSeed: state.randomSeed, pattern: state.pattern, generatorPolicy: state.generatorPolicy,
     straightness: state.straightness, thickness: state.thickness, roundover: state.roundover,
     carve: state.carve, minimumThickness: state.minimumThickness, flipOutside: state.flipOutside,
+    panelOffsets: structuredClone(state.panelOffsets),
     seeds: state.seeds.length ? state.seeds.map(s => ({ ...s, position: [...s.position] })) : null,
     mergeGroups: structuredClone(state.mergeGroups),
     cornerEdits: structuredClone(state.cornerEdits),
@@ -228,6 +232,7 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
   // Always carry a new model forward if a user edits while its first solve is pending.
   if (newModel) state.workerNeedsModel = true;
   setBusy(true);
+  buildOffsetHandle();
   setStatus(preserveSource ? 'Layout accepted · Fitting panels in the background…' : 'Updating the cells…');
   dispatch();
 }
@@ -264,13 +269,16 @@ worker.onmessage = ({ data }) => {
       state.solved = true;
       state.revision++;
       updateCalculationFeedback(summarizeCalculation(data.result));
+      if (data.result.offsetFeedback?.length) $('calculation-comparison').textContent += ` ${data.result.offsetFeedback.join(' ')}`;
       if (state.recoveryEnabled) projectUI?.changed({ activity: false });
       if (!directDrag() && !cornerPending) {
         buildCells();
         if (!drag) buildSeeds();
         buildCorners();
         updateInspector(); updateStats();
-        setStatus(`${state.cells.length} cells · ${state.splitMode ? 'Drag inside the selected cell to divide it · Escape cancels' : state.cornerMode ? 'Drag a shared corner · Release to apply · Escape cancels' : state.multiSelect ? 'Click cells to add or remove them from the selection' : state.edit ? 'Drag a dot to reshape · Shift-click cells to merge' : 'Click a panel to inspect · Drag the model to orbit'}`);
+        const problems = panelProblems();
+        setStatus(problems.length ? `${problems.length} panels need adjustment. See Panels to resolve for what to try. Your study can be saved.` : `${state.cells.length} cells · ${state.offsetMode ? 'Drag the amber handle or enter an offset · Escape cancels' : state.splitMode ? 'Drag inside the selected cell to divide it · Escape cancels' : state.cornerMode ? 'Drag a shared corner · Release to apply · Escape cancels' : state.multiSelect ? 'Click cells to add or remove them from the selection' : state.edit ? 'Drag a dot to reshape · Shift-click cells to merge' : 'Click a panel to inspect · Drag the model to orbit'}`);
+        if (data.result.offsetFeedback?.length) setStatus(`${$('status').textContent} ${data.result.offsetFeedback.join(' ')}`);
       }
     }
   }
@@ -340,8 +348,8 @@ function canArrange() {
   const sourceReady = state.view === 'surface' && !!state.sourceSurface;
   return !state.generating && !cornerPending && (sourceReady || state.solved && !state.busy && !state.pending);
 }
-function graphCentreMode() { return !!state.directBase || !!state.cornerEdits.length || !!state.mergeGroups.length || state.pattern.type !== 'organic'; }
-function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell' || drag?.kind === 'split'; }
+function graphCentreMode() { return !!state.panelOffsets.length || !!state.directBase || !!state.cornerEdits.length || !!state.mergeGroups.length || state.pattern.type !== 'organic'; }
+function directDrag() { return drag?.kind === 'corner' || drag?.kind === 'cell' || drag?.kind === 'split' || drag?.kind === 'offset'; }
 function buildCells() {
   disposeGroup(cellGroup);
   const offsets = explodedOffsets();
@@ -381,7 +389,7 @@ function buildCells() {
     }
   }
   junctionGroup.visible = !state.cornerMode;
-  updateReference(); buildFittingOverlay(); buildAssemblyGuides();
+  updateReference(); buildFittingOverlay(); buildAssemblyGuides(); buildOffsetHandle();
 }
 function buildAssemblyGuides() {
   disposeGroup(assemblyGuideGroup);
@@ -634,6 +642,7 @@ function buildReference() {
   updateReference();
 }
 function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern, projectDocument = null, startup = false, recovered = false, localActivityAt } = {}) {
+  setOffsetNotice('');
   const factor = { mm: 1, cm: 10, m: 1000 }[$('model-units').value];
   const model = { vertices: rawModel.vertices.map(p => p.map(x => x * factor)), triangles: rawModel.triangles.map(t => [...t]) };
   if (model.vertices.some(p => p.length !== 3) || model.triangles.some(t => t.length !== 3 || t.some(i => !Number.isInteger(i) || i < 0 || i >= model.vertices.length))) throw new Error('The model contains invalid face indices or coordinates.');
@@ -653,6 +662,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   state.layout = immutableLayout(layout);
   state.nextCellId = Math.max(nextCellId, nextLayoutCellId(layout), nextLayoutCellId(directBase), ...state.seeds.map(seed => seed.id + 1));
   state.splitMode = false; $('split-cell').setAttribute('aria-pressed', 'false');
+  state.offsetMode = false; $('offset-toggle').setAttribute('aria-pressed', 'false');
   state.directBase = immutableLayout(directBase); state.lastLayoutChange = null;
   if ((directBase || cornerEdits.length) && state.edit) {
     state.edit = false; state.cornerMode = true; state.multiSelect = false;
@@ -662,6 +672,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   }
   disposeGroup(cellGroup); disposeGroup(seedGroup); disposeGroup(cornerGroup);
   if (!preserveSettings) {
+    state.panelOffsets = [];
     state.generatorPolicy = null;
     state.pattern = readPattern(pattern);
     const ideal = initialSize ?? Math.sqrt(state.analysis.area / 130 / 0.866);
@@ -735,11 +746,14 @@ function updateInspector() {
   const seed = state.seeds.find(s => s.id === cell.id);
   $('cell-weight').value = Math.round((seed?.weight ?? 1) * 100);
   $('cell-weight-value').textContent = `${Math.round((seed?.weight ?? 1) * 100)}%`;
-  $('cell-weight').disabled = state.pattern.type !== 'organic' || !!state.directBase || !!state.cornerEdits.length || state.selectedIds.length > 1 || (cell.memberSeedIds?.length ?? 1) > 1;
-  $('cell-weight-help').textContent = state.pattern.type !== 'organic' ? 'Use corner editing and merges to reshape this layout.' : state.directBase ? 'Reset direct edits to change generated cell influence.' : state.cornerEdits.length ? 'Reset corners to change cell influence while keeping merged groups.' : (cell.memberSeedIds?.length ?? 1) > 1 ? 'This merged cell keeps its original regions. Undo the merge to edit their centres or influence.' : state.selectedIds.length > 1 ? 'Select one cell to adjust its influence.' : 'Give this cell more area. Its neighbours adjust.';
+  $('cell-weight').disabled = !!state.panelOffsets.length || state.pattern.type !== 'organic' || !!state.directBase || !!state.cornerEdits.length || state.selectedIds.length > 1 || (cell.memberSeedIds?.length ?? 1) > 1;
+  $('cell-weight').title = state.panelOffsets.length ? 'Cell influence is unavailable while panel offsets are active. Move source corners or centres to reshape cells, or reset all offsets first.' : '';
+  $('cell-weight-help').textContent = state.panelOffsets.length ? 'Cell influence is unavailable with panel offsets. Move source corners or centres instead, or reset all offsets first.' : state.pattern.type !== 'organic' ? 'Use corner editing and merges to reshape this layout.' : state.directBase ? 'Reset direct edits to change generated cell influence.' : state.cornerEdits.length ? 'Reset corners to change cell influence while keeping merged groups.' : (cell.memberSeedIds?.length ?? 1) > 1 ? 'This merged cell keeps its original regions. Undo the merge to edit their centres or influence.' : state.selectedIds.length > 1 ? 'Select one cell to adjust its influence.' : 'Give this cell more area. Its neighbours adjust.';
   const solid = state.result?.solids?.find(s => s.id === cell.id);
   const fittedIssues = cell.issues || [], notes = [];
-  if (state.view === 'solid' || !cell.valid || (solid && !solid.valid)) {
+  const problem = describePanelProblems(cell, solid, { hasOffsets: state.panelOffsets.length > 0 });
+  if (problem) notes.push(...problem.issues);
+  else if (state.view === 'solid') {
     if (!cell.valid && fittedIssues.length) notes.push(`Fitted panel: ${fittedIssues.join(' ')}`);
     const solidIssues = (solid?.issues || []).filter(issue => !(!cell.valid && fittedIssues.length && issue === 'Reshape this cell before making a solid panel.'));
     if (solidIssues.length) notes.push(`Solid panel: ${solidIssues.join(' ')}`);
@@ -778,10 +792,112 @@ function selectCell(id, additive = false) {
   state.selected = state.selectedIds.includes(id) ? id : state.selectedIds.at(-1) ?? null;
   for (const object of cellGroup.children) {
     const selected = state.selectedIds.includes(object.userData.cellId);
-    if (object.isMesh) object.material.color.copy(object.userData.unresolved && !selected ? new THREE.Color('#ce8c74') : cellColor(state.cells.find(c => c.id === object.userData.cellId)));
+    if (object.isMesh) object.material.color.copy(object.userData.unresolved && !selected ? new THREE.Color('#ce8c74') : cellColor(arrangementCells().find(c => c.id === object.userData.cellId)));
     else { object.material.color.set(selected ? '#245db4' : '#657484'); object.material.opacity = selected ? 1 : .69; }
   }
-  updateInspector(); buildFittingOverlay(); buildAssemblyGuides();
+  updateInspector(); buildFittingOverlay(); buildAssemblyGuides(); buildOffsetHandle();
+}
+
+function offsetValue(id = state.selected) { return state.panelOffsets.find(entry => entry.id === id)?.offsetMm ?? 0; }
+function setOffsetNotice(message) { $('offset-change-note').textContent = message; $('offset-change-note').hidden = !message; }
+function offsetEditable() { return !!state.layout && state.selectedIds.length === 1 && state.layout.cells.some(cell => cell.id === state.selected) && !state.generating && !cornerPending && !drag; }
+function updateOffsetControls() {
+  const editable = offsetEditable(), current = offsetValue();
+  $('offset-toggle').disabled = !state.ready || !!drag || !!cornerPending || state.generating;
+  $('offset-toggle').setAttribute('aria-pressed', String(state.offsetMode));
+  $('panel-offset').disabled = !editable;
+  $('apply-offset').disabled = !editable;
+  $('reset-offset').disabled = !editable || current === 0;
+  $('reset-all-offsets').hidden = !state.panelOffsets.length;
+  $('reset-all-offsets').disabled = !!drag || !!cornerPending || state.generating;
+  if (drag?.kind !== 'offset' && (document.activeElement !== $('panel-offset') || $('panel-offset').dataset.cellId !== String(state.selected))) {
+    $('panel-offset').value = current;
+    $('panel-offset').dataset.cellId = String(state.selected);
+  }
+  if (drag?.kind === 'offset') return;
+  $('offset-status').textContent = state.selectedIds.length !== 1 ? 'Select one panel to offset it.'
+    : state.busy || state.pending ? 'Checking the panels. You can change or reset the distance while waiting.'
+    : !state.solved ? 'The calculation did not finish. Your saved offset is kept. Try changing or resetting it; you can still save this study.'
+    : `Offset ${current > 0 ? '+' : ''}${current} mm. Positive follows the amber arrow; neighbouring outlines adjust.`;
+  if (state.solved && !state.busy && !state.pending && state.result?.offsetFeedback?.length) $('offset-status').textContent += ` ${state.result.offsetFeedback.join(' ')}`;
+}
+function clearAffectedOffsets(ids, layout = state.layout) {
+  const before = state.panelOffsets.length;
+  state.panelOffsets = reconcilePanelOffsets(state.panelOffsets, layout, { clearIds: ids });
+  return before - state.panelOffsets.length;
+}
+function leaveOffsetMode() {
+  if (drag?.kind === 'offset') cancelCornerDrag();
+  state.offsetMode = false; $('offset-toggle').setAttribute('aria-pressed', 'false'); disposeGroup(offsetGroup);
+}
+function enableOffsetMode() {
+  state.offsetMode = true; state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false;
+  state.explode = 0; $('explode').value = 0; updateControlLabels();
+  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell']) $(id).setAttribute('aria-pressed', 'false');
+  showView('flat'); buildSeeds(); buildCorners(); buildOffsetHandle(); updateViewportHint(); updateOffsetControls();
+}
+function applyPanelOffset(value, before = null) {
+  if (!offsetEditable()) return;
+  try {
+    if (value === '' || !Number.isFinite(Number(value))) throw new Error('Enter a distance in millimetres, for example 10 or -10.');
+    const offsets = readPanelOffsets([...state.panelOffsets.filter(entry => entry.id !== state.selected), { id: state.selected, offsetMm: Number(value) }], state.layout.cells);
+    finishPendingEdit(); before ??= snapshot();
+    if (JSON.stringify(offsets) === JSON.stringify(state.panelOffsets)) { updateOffsetControls(); return; }
+    state.panelOffsets = offsets;
+    setOffsetNotice('');
+    recordEdit(before);
+    state.latestAcceptedEdit = { type: Number(value) === 0 ? 'reset-panel-offset' : 'offset-panel', cellId: state.selected, revision: state.project.revision };
+    enableOffsetMode(); requestLayout();
+    $('panel-offset').value = offsetValue();
+    setStatus('Offset saved in this study · Checking neighbouring panels. Undo restores the previous edit; Reset returns to zero.');
+  } catch (error) {
+    $('offset-status').textContent = `${error.message} The previous offset is kept.`;
+    setStatus($('offset-status').textContent, true);
+  }
+}
+$('offset-toggle').addEventListener('click', () => {
+  finishPendingEdit(); cancelCornerPending();
+  if (state.offsetMode) { leaveOffsetMode(); updateViewportHint(); updateOffsetControls(); }
+  else { enableOffsetMode(); setStatus('Select one panel, then drag its amber handle or enter an offset in the inspector.'); }
+});
+$('apply-offset').addEventListener('click', () => applyPanelOffset($('panel-offset').value));
+$('panel-offset').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); applyPanelOffset(event.currentTarget.value); }
+});
+$('reset-offset').addEventListener('click', () => applyPanelOffset(0));
+$('reset-all-offsets').addEventListener('click', () => {
+  if ($('reset-all-offsets').disabled || !state.panelOffsets.length) return;
+  finishPendingEdit(); const before = snapshot(); state.panelOffsets = []; recordEdit(before); requestLayout();
+  state.latestAcceptedEdit = { type: 'reset-panel-offsets', revision: state.project.revision };
+  $('panel-offset').value = 0; setStatus('All panel offsets reset. Undo restores them.');
+});
+function buildOffsetHandle(preview = null) {
+  disposeGroup(offsetGroup);
+  if (!state.offsetMode || state.view !== 'flat' || state.explode || state.selectedIds.length !== 1 || !preview && (!state.solved || state.busy || state.pending)) return;
+  const cell = state.cells.find(cell => cell.id === state.selected), reference = cell?.offsetReference;
+  if (!reference) return;
+  const normal = vectors(reference.normal), current = offsetValue(), value = preview ?? current;
+  // Coplanar cells share a fitted plane origin. Put the tool on the selected
+  // outline instead of at that group's origin, which may belong to a neighbour.
+  const boundary = (cell.loops[0] || []).map(id => cell.flatPositions[id]);
+  const origin = boundary.length ? boundary.reduce((sum, point) => sum.add(vectors(point)), new THREE.Vector3()).multiplyScalar(1 / boundary.length) : vectors(reference.origin);
+  origin.addScaledVector(normal, value - normal.dot(origin.clone().sub(vectors(reference.origin))));
+  const length = Math.max(10, state.size * .24), radius = Math.max(2, state.size * .022);
+  const tip = origin.clone().addScaledVector(normal, length);
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([origin.clone().addScaledVector(normal, -length * .3), tip]), new THREE.LineBasicMaterial({ color: '#b16b08', depthTest: false }));
+  line.renderOrder = 5; offsetGroup.add(line);
+  const handle = new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 10), new THREE.MeshBasicMaterial({ color: '#b16b08', depthTest: false }));
+  handle.position.copy(tip); handle.renderOrder = 6; handle.userData.offsetHandle = true;
+  offsetGroup.add(handle);
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(radius * 1.4, radius * 3, 12), new THREE.MeshBasicMaterial({ color: '#b16b08', depthTest: false }));
+  arrow.position.copy(tip).addScaledVector(normal, radius * 2);
+  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal); arrow.renderOrder = 6; arrow.userData.offsetHandle = true; offsetGroup.add(arrow);
+  if (preview !== null) {
+    const points = [], delta = normal.clone().multiplyScalar(value - current);
+    for (const ring of cell.loops) for (let i = 0; i < ring.length; i++) points.push(vectors(cell.flatPositions[ring[i]]).add(delta), vectors(cell.flatPositions[ring[(i + 1) % ring.length]]).add(delta));
+    const ghost = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: '#c5780c', depthTest: false }));
+    ghost.renderOrder = 4; offsetGroup.add(ghost);
+  }
 }
 
 function snapshot() { return { design: captureDesign(state), selectedIds: [...state.selectedIds], selectedCorner: state.selectedCorner }; }
@@ -863,6 +979,7 @@ function updatePatternControls() {
   $('generation-help').textContent = 'Replaces edits. Undo restores them.';
 }
 function restoreSnapshot(entry) {
+  setOffsetNotice('');
   cancelPendingEdit();
   generationSequence++; state.generating = false;
   $('corner-status').textContent = '';
@@ -889,6 +1006,7 @@ function redoEdit() {
 }
 function updateEditAvailability() {
   updateWorkspaceChrome();
+  updateOffsetControls();
   $('stage').classList.toggle('is-calculating', state.generating || state.busy || !!state.pending);
   const waiting = state.generating || state.busy || !!state.pending || !state.solved || !!cornerPending || directDrag();
   $('undo-move').disabled = !state.history.length && !pendingEdit && !cornerPending;
@@ -931,6 +1049,7 @@ function validateMergeSelection() {
   if (reached.size !== selected.size) throw new Error('Select cells connected by shared edges.');
 }
 $('multi-select').addEventListener('click', () => {
+  leaveOffsetMode();
   cancelCornerPending();
   state.multiSelect = !state.multiSelect;
   if (state.multiSelect) { state.edit = false; state.cornerMode = false; state.splitMode = false; }
@@ -952,8 +1071,10 @@ $('merge-cells').addEventListener('click', () => {
     }
     const groups = createMergeGroups(state.result.surfaceCells, state.mergeGroups, state.selectedIds);
     const before = snapshot(), survivor = Math.min(...state.selectedIds);
+    const clearedOffsets = clearAffectedOffsets(state.selectedIds);
     state.mergeGroups = groups; state.selectedIds = [survivor]; state.selected = survivor;
     recordEdit(before); requestLayout();
+    if (clearedOffsets) setOffsetNotice('Offsets on merged panels were cleared. Undo restores the panels and their offsets.');
   } catch (error) { setStatus(error.message, true); }
 });
 $('undo-move').addEventListener('click', undoEdit);
@@ -975,6 +1096,7 @@ function updateViewportHint() {
   updateWorkspaceChrome();
   junctionGroup.visible = !state.cornerMode;
   $('viewport-hint').textContent = state.view === 'reference' ? 'Drag to orbit · Scroll to zoom'
+    : state.offsetMode ? 'Select one panel · Drag the amber handle · Release to check neighbours · Esc cancels'
     : state.splitMode ? 'Drag within the selected cell to draw a divider · Release to apply · Esc cancels'
     : state.cornerMode ? 'Drag a corner · Alt suppresses snapping · Release to apply · Esc cancels'
     : state.multiSelect ? 'Click cells to add or remove them · Drag to orbit · Scroll to zoom'
@@ -1027,9 +1149,9 @@ function resetInteraction() {
   cancelGeneration(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
   // Escape ends the editing tool, but retains an entered slider value.
   finishPendingEdit();
-  state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false;
+  state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false; state.offsetMode = false;
   state.selectedCorner = null; down = null; hoverId = null;
-  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell']) $(id).setAttribute('aria-pressed', 'false');
+  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell', 'offset-toggle']) $(id).setAttribute('aria-pressed', 'false');
   controls.enabled = true; viewport.style.cursor = 'default';
   clearCornerSketch(); disposeGroup(cornerGuide);
   for (const object of cellGroup.children) if (object.isMesh) object.material.emissive.set('#000000');
@@ -1067,6 +1189,7 @@ async function commitDirectEdit(transaction, before) {
     }
     state.directBase ??= state.layout;
     state.layout = immutableLayout(layout); state.sourceSurface = surface; state.lastLayoutChange = change ?? null;
+    const clearedOffsets = clearAffectedOffsets(merging ? transaction.cellIds : splitting ? [transaction.cellId] : [], layout);
     const survivors = new Set(layout.cells.map(cell => cell.id));
     state.selectedIds = state.selectedIds.filter(id => survivors.has(id));
     if (merging) state.selectedIds = [change?.survivingCellId ?? Math.min(...transaction.cellIds)].filter(id => survivors.has(id));
@@ -1079,6 +1202,7 @@ async function commitDirectEdit(transaction, before) {
     $('corner-status').textContent = splitting ? `Cell divided. ${panelId(change.newCellId)} added; Undo restores the original.` : merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
       ? `Corner applied · Removed ${removed.map(panelId).join(', ')}. Undo restores them.`
       : change?.collapsedEdgeIds?.length ? 'Corners joined. Panels refit the edited layout.' : 'Corner applied. Panels refit the edited layout.';
+    if (clearedOffsets) setOffsetNotice(`Offsets on ${splitting ? 'divided' : merging ? 'merged' : 'removed'} panels were cleared. Undo restores the panels and their offsets.`);
     clearCornerSketch();
     requestLayout({ preserveSource: true });
   } catch (error) {
@@ -1095,6 +1219,7 @@ async function commitDirectEdit(transaction, before) {
   }
 }
 $('corner-toggle').addEventListener('click', () => {
+  leaveOffsetMode();
   finishPendingEdit(); cancelCornerPending();
   state.cornerMode = !state.cornerMode || state.view === 'reference' || state.explode !== 0;
   if (state.cornerMode) {
@@ -1111,6 +1236,7 @@ $('corner-toggle').addEventListener('click', () => {
 });
 $('split-cell').addEventListener('click', () => {
   if ($('split-cell').disabled) return;
+  leaveOffsetMode();
   finishPendingEdit(); cancelCornerPending();
   state.splitMode = !state.splitMode;
   if (state.splitMode) {
@@ -1135,6 +1261,7 @@ $('reset-corners').addEventListener('click', () => {
   finishPendingEdit(); cancelCornerPending();
   if (state.directBase) {
     const before = snapshot(); state.layout = state.directBase; state.directBase = null; state.lastLayoutChange = null;
+    clearAffectedOffsets([], state.layout);
     state.selectedCorner = null;
     recordEdit(before); requestLayout();
     $('corner-status').textContent = 'Direct edits reset. Earlier corner edits and merges are restored.';
@@ -1159,6 +1286,26 @@ renderer.domElement.addEventListener('pointerdown', event => {
   if (event.button !== 0) return;
   cast(event); down = { x: event.clientX, y: event.clientY };
   if (state.generating) return;
+  if (state.offsetMode && state.view === 'flat' && state.solved && !state.busy && !state.pending && offsetEditable()) {
+    const hit = raycaster.intersectObjects(offsetGroup.children.filter(object => object.userData.offsetHandle))[0];
+    const cell = state.cells.find(cell => cell.id === state.selected);
+    if (hit && cell?.offsetReference) {
+      finishPendingEdit();
+      const normal = vectors(cell.offsetReference.normal), origin = hit.object.position.clone();
+      const length = Math.max(10, state.size * .24), rect = renderer.domElement.getBoundingClientRect();
+      const a = origin.clone().project(camera), b = origin.clone().addScaledVector(normal, length).project(camera);
+      const dx = (b.x - a.x) * rect.width / 2 / length, dy = -(b.y - a.y) * rect.height / 2 / length;
+      const worldPerPixel = 2 * origin.distanceTo(camera.position) * Math.tan(camera.fov * Math.PI / 360) / rect.height;
+      const endOn = Math.hypot(dx, dy) * worldPerPixel < .2;
+      drag = { kind: 'offset', before: snapshot(), pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+        startOffset: offsetValue(), value: offsetValue(), dx, dy, worldPerPixel, endOn, changed: false };
+      controls.enabled = false; renderer.domElement.focus({ preventScroll: true });
+      renderer.domElement.setPointerCapture(event.pointerId); viewport.style.cursor = 'grabbing';
+      updateEditAvailability(); updateExportAvailability();
+      setStatus(endOn ? 'Arrow faces you: drag upwards to increase the offset. Shift for fine movement; Escape cancels.' : 'Drag along the arrow. Shift for fine movement; Escape cancels.');
+      event.stopImmediatePropagation(); event.preventDefault(); return;
+    }
+  }
   if (state.splitMode && state.view === 'surface' && canArrange()) {
     const hit = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
     if (hit && hit.object.userData.cellId === state.selected && state.selectedIds.length === 1) {
@@ -1241,6 +1388,16 @@ renderer.domElement.addEventListener('pointerdown', event => {
 let dragTimer;
 renderer.domElement.addEventListener('pointermove', event => {
   cast(event);
+  if (drag?.kind === 'offset') {
+    const x = event.clientX - drag.startX, y = event.clientY - drag.startY;
+    const distance = drag.endOn ? -y * drag.worldPerPixel : (x * drag.dx + y * drag.dy) / (drag.dx * drag.dx + drag.dy * drag.dy);
+    drag.value = Math.max(-10000, Math.min(10000, Math.round((drag.startOffset + distance * (event.shiftKey ? .1 : 1)) * 100) / 100));
+    drag.changed = Math.abs(drag.value - drag.startOffset) > .005;
+    $('panel-offset').value = drag.value;
+    $('offset-status').textContent = `Preview ${drag.value > 0 ? '+' : ''}${drag.value} mm. Release to check neighbours; Escape cancels.`;
+    buildOffsetHandle(drag.value); setStatus($('offset-status').textContent);
+    event.stopImmediatePropagation(); event.preventDefault(); return;
+  }
   if (drag?.kind === 'split') {
     const hit = raycaster.intersectObjects(cellGroup.children.filter(object => object.isMesh))[0];
     const point = hit?.object.userData.cellId === drag.cellId ? hit.point : raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
@@ -1329,7 +1486,8 @@ function endDrag(event) {
     drag = null; down = null; controls.enabled = true; viewport.style.cursor = 'default';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (moved.changed) {
-      if (moved.kind === 'split') {
+      if (moved.kind === 'offset') applyPanelOffset(moved.value, moved.before);
+      else if (moved.kind === 'split') {
         const nextCellId = state.nextCellId++;
         acceptedProjectChange('reserve-panel-id', { newCellId: nextCellId });
         commitDirectEdit({ type: 'split-cell', cellId: moved.cellId, start: moved.start, end: moved.end, nextCellId }, moved.before);
@@ -1374,7 +1532,7 @@ async function freshLayout({ applySettings = false } = {}) {
       if (candidate.generatorPolicy) candidate.size = candidate.generatorPolicy.maxSizeMm;
       if (candidate.pattern.type === 'organic') candidate.randomSeed++;
     }
-    Object.assign(candidate, { seeds: [], mergeGroups: [], cornerEdits: [], layout: null, directBase: null });
+    Object.assign(candidate, { seeds: [], mergeGroups: [], cornerEdits: [], panelOffsets: [], layout: null, directBase: null });
     state.generating = true; updateEditAvailability();
     setStatus(candidate.pattern.type === 'regularized' ? 'Regularizing cells on the surface… Escape cancels.' : 'Checking the new arrangement…');
     const { layout } = await validateDesignGeometry({ ...candidate, model: state.model });
@@ -1385,6 +1543,7 @@ async function freshLayout({ applySettings = false } = {}) {
     state.generating = false;
     Object.assign(state, candidate, { seeds: structuredClone(layout.recipe.seeds), layout: immutableLayout(layout),
       lastLayoutChange: null, selectedCorner: null, selected: null, selectedIds: [] });
+    setOffsetNotice(before.design.panelOffsets.length ? 'The new layout cleared all panel offsets. Undo restores the previous layout and its offsets.' : '');
     recordEdit(before); syncDesignControls(); updateViewportHint(); requestLayout();
   } catch (error) {
     if (sequence === generationSequence) setStatus(`Arrangement not applied: ${error.message}`, true);
@@ -1436,6 +1595,7 @@ document.querySelectorAll('[data-size]').forEach(button => button.addEventListen
 $('regenerate').addEventListener('click', () => freshLayout({ applySettings: true }));
 $('reset-layout').addEventListener('click', () => freshLayout());
 $('edit-toggle').addEventListener('click', () => {
+  leaveOffsetMode();
   cancelCornerPending();
   state.edit = !state.edit;
   if (state.edit) { state.multiSelect = false; state.cornerMode = false; state.splitMode = false; }
@@ -1454,11 +1614,12 @@ document.querySelectorAll('[data-camera-view]').forEach(button => button.addEven
   cancelCornerDrag(); cancelCornerPending(); fitView(button.dataset.cameraView); projectUI?.viewChanged();
 }));
 document.querySelectorAll('[data-browser-view]').forEach(button => button.addEventListener('click', () => showView(button.dataset.browserView)));
-$('explode').addEventListener('input', () => { cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
+$('explode').addEventListener('input', () => { leaveOffsetMode(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
 $('explode').addEventListener('change', () => fitView(null));
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   cancelCornerDrag(); cancelCornerPending();
   state.view = button.dataset.view;
+  if (state.view !== 'flat') leaveOffsetMode();
   if (state.view !== 'surface') { state.splitMode = false; $('split-cell').setAttribute('aria-pressed', 'false'); }
   document.querySelectorAll('[data-view]').forEach(b => { const active = b.dataset.view === state.view; b.classList.toggle('is-active', active); b.setAttribute('aria-pressed', String(active)); });
   buildCells(); buildSeeds(); buildCorners(); updateInspector(); updateExportAvailability(); updateViewportHint(); updateStats();
@@ -1495,12 +1656,8 @@ function panelProblems() {
   const solids = new Map((state.result?.solids || []).map(solid => [solid.id, solid]));
   return state.cells.flatMap(cell => {
     const solid = solids.get(cell.id);
-    if (cell.valid && solid?.valid) return [];
-    const flatIssues = cell.valid ? [] : cell.issues || [];
-    const solidIssues = (solid?.issues || []).filter(issue => !(!cell.valid && flatIssues.length && issue === 'Reshape this cell before making a solid panel.'));
-    return [{ id: cell.id, stage: !cell.valid ? 'Outline' : 'Solid',
-      issues: [...flatIssues.map(issue => `Outline: ${issue}`), ...solidIssues.map(issue => `Solid: ${issue}`),
-        ...(!solid ? ['Solid: no solid geometry was produced.'] : [])] }];
+    const problem = describePanelProblems(cell, solid, { hasOffsets: state.panelOffsets.length > 0 });
+    return problem ? [{ id: cell.id, ...problem }] : [];
   });
 }
 function updatePanelDiagnostics(waiting) {
@@ -1654,7 +1811,7 @@ function validateStudyGeometry(study) {
   const factor = { mm: 1, cm: 10, m: 1000 }[study.units];
   return validateDesignGeometry({
     model: { vertices: study.rawModel.vertices.map(point => point.map(value => value * factor)), triangles: study.rawModel.triangles },
-    seeds: study.seeds, size: study.size, pattern: study.pattern, generatorPolicy: study.generatorPolicy, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
+    seeds: study.seeds, size: study.size, pattern: study.pattern, generatorPolicy: study.generatorPolicy, panelOffsets: study.panelOffsets, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
 }
 async function openStudyDocument(study, { recovered = false, checkpoint = true, activeAt, automatic = false } = {}) {
   const opening = ++studyOpenRevision;
@@ -1776,6 +1933,7 @@ function animate() { paintSplitPreview(); paintCornerSketch(); controls.update()
 animate();
 // Read-only diagnostics for geometry and interaction verification.
 window.cellStudy = { get state() { return state; }, get camera() { return camera; }, get controls() { return controls; },
+  projectOffsetHandle() { const handle = offsetGroup.children.find(child => child.userData.offsetHandle); if (!handle) return null; const p = handle.position.clone().project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectCellCentre(id) { const handle = seedGroup.children.find(child => child.userData.seedId === id); if (!handle) return null; const p = handle.position.clone().project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectCorner(id) { const corner = arrangementCorners().find(c => c.id === id); if (!corner) return null; const position = cornerDisplayPosition(corner, state.view, camera.position.toArray()); if (!position) return null; const p = vectors(position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; },
   projectSeed(id) { const seed = state.seeds.find(s => s.id === id); if (!seed) return null; const p = vectors(seed.position).project(camera), r = renderer.domElement.getBoundingClientRect(); return { x: r.x + (p.x + 1) * r.width / 2, y: r.y + (1 - p.y) * r.height / 2, z: p.z }; } };

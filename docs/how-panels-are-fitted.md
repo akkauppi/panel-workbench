@@ -8,7 +8,8 @@ original shape.
 
 This guide explains that distinction and the current algorithm. The drawings
 are exaggerated schematics, not screenshots or fabrication drawings. The
-implementation described here is the durable-v6 release of 2026-10-30; the source
+implementation described here includes the offset update to the durable-v6
+workflow on 2026-11-02; the source
 links at the end identify the relevant functions.
 
 ## One design, three representations
@@ -92,6 +93,35 @@ seam. It does **not** prove that the resulting outline is simple, flat within
 tolerance, close enough to the shell, or usable as a thick solid. A reported
 zero seam gap is only one of the checks.
 
+## Moving a panel away from the shell
+
+**Offset panel** deliberately shifts one fitted plane along its normal. This
+keeps the chosen plane parallel to its baseline position; it does not keep the
+old outline or move a finished rigid part with all its neighbours untouched.
+Shared corners must be recalculated, so surrounding outlines and angles can
+change too. The original shell remains the reference.
+
+![The selected panel plane is raised while neighbours adjust; incompatible chosen planes leave a junction unresolved.](figures/algorithm/panel-offset.svg)
+
+For a signed offset `h_i`, the chosen plane condition becomes:
+
+```text
+n_i · x_v = d_i + h_i
+```
+
+The unit normal and `d_i` come from the baseline fit for the current source and
+settings. A nonzero authored offset holds that plane fixed during the second
+solve; unconstrained neighbours can adjust. The value is applied once from the
+baseline, so repeated recalculation does not accumulate movement. The positive
+direction follows the displayed source-oriented normal, independently of
+**Flip inside / outside**.
+
+Flatness, common corners, opening constraints and the requested plane can still
+conflict. The app reports an unresolved result rather than quietly removing the
+offset. Source deviation and corner-shift metrics include this intentional
+displacement. The [offset guide](offset-panels.md) explains the control, what
+source edits do to saved offsets and the suggested repairs.
+
 ## What the current algorithm does
 
 ### 1. Establish or restore the source arrangement
@@ -158,6 +188,20 @@ intersection is non-finite or too far from the source, the preview keeps a
 bounded shared candidate and reports the problem instead of displaying a long
 spike as a valid part.
 
+If authored offsets are present, a second constrained fit starts from the
+baseline result. Offset panels are kept on their requested planes while the
+remaining planes and shared vertices adjust. Nearly coplanar neighbours are no
+longer forced to share the selected plane. The constrained result passes the
+same downstream outline and stock checks. This extra solve is bounded too: a
+failed attempt is not a proof that no alternative arrangement could work.
+
+A conservative fallback can translate an entirely coplanar connected group when
+the local solve fails, provided all authored offsets in that group agree with
+the same translation. It is retained only after flat-panel and unrounded-stock
+checks pass. The UI reports the wider movement; Undo restores the previous
+arrangement. Rounded and carved stock are still checked later. This fallback
+does not apply a rigid translation to a curved shell.
+
 ### 4. Validate, and try bounded coupled repairs
 
 The fitter checks the flattened outlines, planarity, source/rim movement and
@@ -198,6 +242,7 @@ performance. See [Rhino objects and linked blocks](rhino-workflow.md).
 | Nearly parallel neighbouring planes | Small angular changes can move their intersection a long way | Inspect corner shift and neighbouring panels, rather than only the selected face |
 | A very short shared edge | Its endpoints can collapse or reverse order during fitting | Inspect both owners of the seam; adjust the neighbouring arrangement or remove an unnecessary short edge |
 | A constrained opening or rim | Staying on the rim competes with planarity and neighbouring plane intersections | Check the boundary cells together; retain the intended opening when adjusting them |
+| An authored panel offset | The chosen plane may conflict with shared corners, nearby planes or an opening | Reduce or reset nearby offsets first; then adjust source corners or divide the region |
 | Thick stock, mitres or carving | Offsets can cross, joints can disagree, or carving can leave too little material | Inspect the solid-specific reason and the chosen thickness/carving settings |
 | A source move crosses a seam or folds its local chart | The attempted partition itself is invalid or unsupported by that local editing method | Try a smaller move or another local arrangement; the previous accepted layout remains available |
 
@@ -254,6 +299,14 @@ Exploded views and assembly guides are presentation transforms. They help trace
 parts back to their assembled positions, but do not alter the accepted source,
 solve panel geometry or add a fabrication constraint.
 
+Panel offsets are saved fabrication constraints. Their drag preview is a
+disposable amber outline; accepting a value or releasing the handle requests a
+new fit and stock calculation. The accepted value can be saved even if that
+calculation is unresolved, and can be reduced, reset or undone. Explanations in
+the panel inspector and **Panels to resolve** describe the issue in design terms
+and suggest a next edit; the underlying issue strings remain available in the
+Rhino repair handoff and classified feedback report.
+
 ## Where to look in the code
 
 | Module and main entry point | Responsibility |
@@ -262,6 +315,7 @@ solve panel geometry or add a fabrication constraint.
 | [`layout.js` — `captureLayout`, `restoreLayout`](../demo/layout.js) | Source graph, identities and validation of stored source geometry |
 | [`layout-edit.js` — `transactLayout`](../demo/layout-edit.js) | Atomic corner/centre/merge/divide transactions |
 | [`fitted.js` — `fitSharedPanels`, `buildNetwork`, `repairCoupledPlanes`](../demo/fitted.js) | Shared fitting, rim constraints, bounded repairs and diagnostics |
+| [`panel-diagnostics.js` — `describePanelProblems`](../demo/panel-diagnostics.js) | Plain-language causes and suggested next edits for unresolved parts |
 | [`solids.js` — `buildPanelSolids`](../demo/solids.js) | Thickness, cut faces, roundovers and solid checks |
 | [`carving.js` — `buildCarvedPanels`](../demo/carving.js) | Reference-following carved geometry and material checks |
 | [`worker.js` — `createWorkerHandler`](../demo/worker.js) | Stage ordering and separate validation/calculation requests |

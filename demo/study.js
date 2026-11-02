@@ -1,6 +1,7 @@
 import { readLayout, layoutRecipe, nextLayoutCellId } from './layout.js';
 import { readPattern } from './pattern.js';
 import { readGeneratorPolicy } from './generator-policy.js';
+import { readPanelOffsets } from './panel-offsets.js';
 import { STUDY_VERSION, CURRENT_ENGINES, assertStudySize, utf8Bytes, createProjectMetadata,
   readProjectMetadata, readProducer, readEngines, requiredStudyFeatures, readRequiredFeatures, readCalculationMetadata } from './project-document.js';
 import { readCalculationSummary } from './project-feedback.js';
@@ -39,6 +40,9 @@ export function captureDesign(state) {
   // History uses explicit null so Object.assign can turn an earlier adaptive
   // policy off. The transport reader below omits null for legacy byte stability.
   result.generatorPolicy = readGeneratorPolicy(state.generatorPolicy, result.pattern);
+  // Explicit empty arrays let Undo clear offsets; transport omits empty values
+  // so all earlier no-offset studies retain their exact serialized fields.
+  result.panelOffsets = readPanelOffsets(state.panelOffsets);
   for (const key of ['layout', 'directBase']) {
     const layout = state[key] ?? null;
     result[key] = layout && immutableLayouts.has(layout) ? layout : structuredClone(layout);
@@ -161,6 +165,8 @@ export function readStudy(input) {
   if (!isId(randomSeed)) throw new Error('The study contains an invalid arrangement seed.');
   const pattern = readPattern(study.pattern), generatorPolicy = readGeneratorPolicy(study.generatorPolicy, pattern);
   if (generatorPolicy && study.version < 6) throw new Error('Curvature sizing requires study file version 6 and its required-feature declaration. Keep the original file unchanged.');
+  const panelOffsets = readPanelOffsets(study.panelOffsets);
+  if (panelOffsets.length && study.version < 6) throw new Error('Panel offsets require study file version 6 and their required-feature declaration. Keep the original file unchanged.');
   const view = study.view ?? 'surface';
   if (!['surface', 'flat', 'solid', 'reference'].includes(view)) throw new Error('The study contains an invalid view.');
   if (study.name !== undefined && typeof study.name !== 'string') throw new Error('The study contains an invalid name.');
@@ -171,6 +177,7 @@ export function readStudy(input) {
     rawModel: readModel(study.rawModel, study.units), units: study.units, up: study.up,
     seeds, mergeGroups, cornerEdits, pattern,
     ...(generatorPolicy ? { generatorPolicy } : {}),
+    ...(panelOffsets.length ? { panelOffsets } : {}),
     size: number(study.size, undefined, Number.MIN_VALUE, Infinity, 'cell size'),
     variation: number(study.variation, undefined, 0, 1, 'variation'), randomSeed,
     straightness: number(study.straightness, .7, 0, 1, 'border straightness'),
@@ -183,6 +190,10 @@ export function readStudy(input) {
     directBase: study.version >= 5 && study.directBase != null ? readLayout(study.directBase) : null,
     allowCellRemoval: boolean(study.allowCellRemoval, 'cell removal setting', true),
   };
+  if (panelOffsets.length) {
+    if (!result.layout) throw new Error('Panel offsets need their saved source layout. Keep the original project file unchanged.');
+    readPanelOffsets(panelOffsets, result.layout.cells);
+  }
   if (result.pattern.type !== 'organic' && result.cornerEdits.length) {
     throw new Error('This layout pattern cannot use legacy corner targets.');
   }

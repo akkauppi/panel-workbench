@@ -361,3 +361,11 @@ body:not(:has(#split-cell[aria-pressed="true"])) .split-help { display: none; }
 #recovery-list > * { padding:12px 0; border-bottom:1px solid #d9e0e7; }
 #recovery-list button { margin:4px 6px 4px 0; }
 #project-status.is-error { color:#9d462b; }
+/* Persistent panel offsets use the inspector so the Modify ribbon stays compact. */
+.panel-offset-controls { margin: 12px 0; padding: 10px; border: 1px solid #c8d1da; border-radius: 5px; background: #f5f7fa; }
+.panel-offset-input { display: flex; gap: 5px; margin-top: 7px; }
+.panel-offset-input input { min-width: 0; width: 100%; flex: 1; padding: 4px 6px; border: 1px solid var(--line); background: white; }
+.panel-offset-input button { padding: 5px 8px; }
+.panel-offset-controls .control-hint { margin: 8px 0 0; }
+.properties-scroll > .reset-offsets { margin: 10px 12px 0; font-size: 11px; }
+#offset-change-note { margin: 10px 12px; padding: 8px; background: #fff3dc; color: #745017; }

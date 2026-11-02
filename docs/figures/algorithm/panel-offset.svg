@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Offsetting a panel changes its shared neighbourhood</title>
+  <desc id="desc">Two schematic cross sections. On the left a horizontal selected panel is moved upwards along its normal. Its sloping neighbours adjust and stay straight in section, while the curved source shell remains unchanged. On the right several independently offset panel planes cannot meet at their intended shared corner, so the candidate must stay unresolved. Distances and angles are exaggerated, not fabrication dimensions.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#a66213"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #233044; }
+      .heading { font-size: 26px; font-weight: 700; }
+      .stage { font-size: 20px; font-weight: 700; }
+      .body { font-size: 17px; }
+      .small { font-size: 14px; fill: #536174; }
+      .source { fill: none; stroke: #176ea7; stroke-width: 2.5; stroke-dasharray: 5 5; }
+      .old { fill: none; stroke: #a4acb6; stroke-width: 2; stroke-dasharray: 7 6; }
+      .new { fill: none; stroke: #7450a1; stroke-width: 5; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <rect width="1200" height="460" fill="#fff"/>
+  <text class="heading" x="32" y="39">An offset moves a panel plane, then the joints must fit again</text>
+  <text class="small" x="32" y="64">Schematic cross sections · each straight segment represents a flat panel</text>
+  <text class="stage" x="42" y="108">A raised panel with adjusted neighbours</text>
+  <path class="source" d="M55 297Q285 190 525 297"/>
+  <path class="old" d="M55 297L205 230H365L525 297"/>
+  <path class="new" d="M55 297L198 175H371L525 297"/>
+  <path d="M198 175H371" fill="none" stroke="#245db4" stroke-width="8"/>
+  <g fill="#fff" stroke="#7450a1" stroke-width="2.5"><circle cx="198" cy="175" r="5"/><circle cx="371" cy="175" r="5"/></g>
+  <path d="M285 225V182" stroke="#a66213" stroke-width="3" marker-end="url(#arrow)"/>
+  <text class="body" x="299" y="212">+ offset</text>
+  <text class="small" x="213" y="153">selected panel</text>
+  <path d="M93 182L128 229" fill="none" stroke="#536174" stroke-width="1.4"/>
+  <text class="small" x="42" y="168">neighbour tilts</text>
+  <text class="small" x="211" y="283">source shell stays</text>
+  <text class="body" x="42" y="339">Shared corners and outlines can change.</text>
+  <text class="body" x="42" y="366">The requested panel plane stays at its offset.</text>
+
+  <path d="M594 97V386" stroke="#e1e5eb" stroke-width="2"/>
+  <text class="stage" x="642" y="108">Some chosen planes cannot meet</text>
+  <path class="source" d="M655 297Q882 190 1130 297"/>
+  <path class="old" d="M655 297L883 220L1130 297"/>
+  <path class="new" d="M655 297L848 187M917 187L1130 297"/>
+  <path d="M797 238H975" fill="none" stroke="#245db4" stroke-width="6"/>
+  <g fill="#fff" stroke="#b44732" stroke-width="2.5"><circle cx="848" cy="187" r="6"/><circle cx="917" cy="187" r="6"/><circle cx="883" cy="238" r="6"/></g>
+  <path d="M848 187L917 187L883 238Z" fill="#fff0e9" stroke="#b44732" stroke-dasharray="4 4" stroke-width="2"/>
+  <text class="small" x="813" y="158">no common corner</text>
+  <text class="body" x="642" y="339">Keep the candidate unresolved.</text>
+  <text class="body" x="642" y="366">Reduce or reset offsets; adjust the arrangement.</text>
+
+  <rect x="24" y="402" width="1152" height="39" rx="5" fill="#fff5e6"/>
+  <text class="small" x="40" y="426">Your design remains editable and saveable. Production export waits for the current flat-panel and solid checks.</text>
+</svg>

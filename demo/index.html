@@ -81,6 +81,7 @@
             <div class="tool-modes" role="group" aria-label="Editing mode">
               <button id="edit-toggle" class="ribbon-command ribbon-large" type="button" aria-pressed="true" title="Move cell centres"><svg><use href="#i-move"></use></svg>Move cells</button>
               <button id="corner-toggle" class="ribbon-command ribbon-large" type="button" aria-pressed="false" title="Drag shared corners in the current view"><svg><use href="#i-corner"></use></svg>Drag corners</button>
+              <button id="offset-toggle" class="ribbon-command ribbon-large" type="button" aria-pressed="false" title="Move one panel along its normal in Flat view"><svg><use href="#i-move"></use></svg>Offset panel</button>
               <button id="multi-select" class="ribbon-command ribbon-large" type="button" aria-pressed="false" title="Add or remove cells from the selection"><svg><use href="#i-select"></use></svg>Select cells</button>
             </div>
           </div>
@@ -339,6 +340,15 @@
       <span id="ribbon-selection-context" class="selection-context">No selection</span>
     </div>
 
+    <div id="offset-info" class="format-info" popover role="note" aria-labelledby="offset-info-title">
+      <button class="info-close" type="button" popovertarget="offset-info" popovertargetaction="hide" aria-label="Close panel offset information">×</button>
+      <h2 id="offset-info-title">Move a panel away from the shell</h2>
+      <p>Select one panel, choose Offset panel, then drag the amber handle or enter a distance in millimetres and Apply. Positive follows the arrow; negative goes the other way. If the arrow points towards you, drag upwards to increase the offset.</p>
+      <p>The panel stays parallel to its usual fitted plane. Neighbouring panels adjust and their outlines can change. During dragging, the amber outline shows only the proposed move; release calculates the joints and checks the parts.</p>
+      <p>The source shell stays unchanged. Some moves cannot form usable parts with the surrounding panels. Reduce the distance, Reset, Undo, or reshape nearby cells. Your study can still be saved; production export waits for valid parts.</p>
+      <p>Source edits recalculate the usual fitted plane. Divide or merge clears offsets on those panels; New arrangement and Reset cell edits clear all offsets. Undo restores them. Changing the outside face does not reverse the arrow.</p>
+      <a href="https://github.com/akkauppi/panel-workbench/blob/main/docs/offset-panels.md" target="_blank" rel="noopener">Read the illustrated offset guide</a>
+    </div>
     <div id="curvature-info" class="format-info" popover role="note" aria-labelledby="curvature-info-title">
       <button class="info-close" type="button" popovertarget="curvature-info" popovertargetaction="hide" aria-label="Close curvature sizing information">×</button>
       <h2 id="curvature-info-title">Smaller cells at sharper bends</h2>
@@ -407,6 +417,8 @@
             <span class="palette-unit">mm</span>
           </header>
           <div class="properties-scroll">
+            <button id="reset-all-offsets" type="button" class="button reset-offsets" hidden>Reset all panel offsets</button>
+            <p id="offset-change-note" class="control-hint" role="status" hidden></p>
             <div id="selection-empty" class="selection-empty">
               <div class="empty-illustration" aria-hidden="true">
                 <svg viewBox="0 0 40 40"><path d="M3 3h34v34H3ZM3 24l18-10 16 13M21 3v11L13 37"></path><path d="M18 11h6v6h-6Z"></path></svg>
@@ -418,6 +430,11 @@
               <div class="selected-heading">
                 <span class="small-label">Cell</span>
                 <strong id="selected-id">—</strong>
+              </div>
+              <div class="panel-offset-controls">
+                <div class="control-label"><label for="panel-offset">Panel offset · mm</label><button class="info-button" type="button" popovertarget="offset-info" aria-label="About panel offsets"><svg><use href="#i-info"></use></svg></button></div>
+                <div class="panel-offset-input"><input id="panel-offset" type="number" step="1" min="-10000" max="10000" value="0" aria-describedby="offset-status"><button id="apply-offset" class="button" type="button">Apply</button><button id="reset-offset" class="button" type="button">Reset</button></div>
+                <p id="offset-status" class="control-hint" role="status" aria-live="polite">Positive follows the amber arrow. Neighbouring outlines adjust.</p>
               </div>
               <div class="panel-preview-wrap">
                 <canvas id="panel-preview" width="440" height="340" aria-label="Selected cell cutting outline"></canvas>

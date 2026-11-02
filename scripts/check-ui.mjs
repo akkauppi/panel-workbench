@@ -613,8 +613,8 @@ clickSeed(0);
 assert.equal(state.selected, 0);
 for (const view of ['surface', 'flat', 'solid']) {
   document.querySelector(`[data-view="${view}"]`).click();
-  assert.match($('selected-note').textContent, /^Fitted panel:/);
-  for (const issue of state.cells[0].issues) assert.ok($('selected-note').textContent.includes(issue), `${view} retains the actual fitted failure`);
+  assert.match($('selected-note').textContent, /region contains separate pieces.*Divide the region/s, `${view} explains the actual fitted failure and a next edit`);
+  assert.match($('selected-note').textContent, /design can still be saved.*Production export waits/s, `${view} explains saving and production status`);
   assert.doesNotMatch($('selected-note').textContent, /Reshape this cell before making a solid panel/, 'the generic inherited failure does not hide useful fitted diagnostics');
   assert.equal($('export-obj').disabled, view !== 'surface');
   assert.equal($('export-dxf').disabled, true);
@@ -1949,18 +1949,18 @@ for (const view of ['surface', 'flat', 'solid', 'reference']) {
   document.querySelector(`[data-view="${view}"]`).click();
   assert.equal($('panel-problems').hidden, false, `${view} keeps panel diagnoses visible`);
   assert.equal($('panel-problem-list').querySelectorAll('[data-panel-id]').length, 2);
-  assert.ok($('panel-problem-list').textContent.includes(outlineFailure));
-  assert.ok($('panel-problem-list').textContent.includes(solidFailure));
+  assert.match($('panel-problem-list').textContent, /Two edges of the same panel cross.*Move a nearby corner/s);
+  assert.match($('panel-problem-list').textContent, /Adding thickness or rounding.*Try less thickness/s);
 }
 problemButton(outlineId).click();
 assert.equal(state.selected, outlineId); assert.equal(state.view, 'flat');
 assert.equal(problemButton(outlineId).getAttribute('aria-pressed'), 'true');
-assert.ok($('selected-note').textContent.includes(outlineFailure), 'outline selection explains its actual fitting failure');
+assert.match($('selected-note').textContent, /Two edges of the same panel cross.*Move a nearby corner/s, 'outline selection explains its actual fitting failure and a next edit');
 assert.ok(!$('selected-note').textContent.includes('Reshape this cell before making a solid panel.'), 'generic downstream rejection does not obscure the original reason');
 problemButton(solidOnlyId).click();
 assert.equal(state.selected, solidOnlyId); assert.equal(state.view, 'solid');
 assert.equal(problemButton(solidOnlyId).getAttribute('aria-pressed'), 'true');
-assert.ok($('selected-note').textContent.includes(solidFailure), 'solid selection explains its separate thickness failure');
+assert.match($('selected-note').textContent, /Adding thickness or rounding.*Try less thickness/s, 'solid selection explains its separate thickness failure and a next edit');
 
 await expectStaleRhinoExportBlocked('export-rhino-repair');
 const repairDownloadCount = downloads.length;
@@ -2159,6 +2159,34 @@ assertNeutralTools('Escape from pending graph centre move');
 assert.deepEqual(currentDesign(), afterGraphCentre, 'late validation cannot apply a cancelled graph move');
 console.log('PASS centre movement after corners preserves authored layout, undo/redo/save/reopen and Escape rollback');
 
+// Offsets attach to stable panel identities. Even a previously seed-driven
+// organic layout must use checked graph movement after an offset is authored.
+await openStudy(stripStudy, 'offset organic centre movement fixture');
+clickSeed(20);
+await edit(() => { input('panel-offset', '10'); clickControl('apply-offset'); }, 'offset before organic centre move');
+assert.deepEqual(state.panelOffsets, [{ id: 20, offsetMm: 10 }]);
+assert.equal($('cell-weight').disabled, true, 'offsets disable redistribution that could remove their panel');
+assert.match($('cell-weight-help').textContent, /offset/i);
+document.querySelector('[data-view="surface"]').click();
+clickControl('edit-toggle'); flush();
+const offsetCentreLayout = structuredClone(state.layout), offsetCentreSeeds = structuredClone(state.seeds);
+const offsetCentreHandle = window.cellStudy.projectCellCentre(20);
+assert.ok(offsetCentreHandle, 'offset organic panel exposes a graph centre handle');
+await edit(() => {
+  pointer(canvas, 'pointerdown', offsetCentreHandle.x, offsetCentreHandle.y);
+  pointer(canvas, 'pointermove', offsetCentreHandle.x + 8, offsetCentreHandle.y + 4);
+  pointer(canvas, 'pointerup', offsetCentreHandle.x + 8, offsetCentreHandle.y + 4);
+}, 'checked graph centre move with offset');
+assert.notDeepEqual(state.layout, offsetCentreLayout);
+assert.deepEqual(state.seeds, offsetCentreSeeds, 'graph movement preserves generator seeds and panel identities');
+assert.deepEqual(state.panelOffsets, [{ id: 20, offsetMm: 10 }]);
+assert.deepEqual(state.layout.cells.map(cell => cell.id), offsetCentreLayout.cells.map(cell => cell.id));
+assert.equal($('save-study').disabled, false);
+await edit(() => key('z'), 'undo offset graph centre move');
+assert.deepEqual(state.layout, offsetCentreLayout);
+assert.deepEqual(state.panelOffsets, [{ id: 20, offsetMm: 10 }]);
+console.log('PASS offsets preserve organic panel identities through checked centre moves and Undo');
+
 // An ordinary organic merge predates direct graph edits. It must expose one
 // movable merged centre before any corner has been edited.
 await openStudy(stripStudy, 'ordinary organic merge before centre movement');
@@ -2219,7 +2247,23 @@ escape(); pointer(canvas,'pointerup',splitTo.x,splitTo.y);
 assertNeutralTools('divider preview cancellation'); assert.deepEqual(currentDesign(),beforeSplit);
 pointer(canvas,'pointerdown',splitPoint.x,splitPoint.y); pointer(canvas,'pointerup',splitPoint.x,splitPoint.y);
 clickControl('split-cell');
-await edit(()=>{splitTo=beginSplit();pointer(canvas,'pointerup',splitTo.x,splitTo.y);},'divide selected cell');
+const splitFitIndex = heldFitReplies.length, splitFitRevision = state.revision;
+holdNextFitReply = true;
+splitTo=beginSplit();pointer(canvas,'pointerup',splitTo.x,splitTo.y);
+await until(() => heldFitReplies.length > splitFitIndex && !!state.sourceSurface, 'accepted division before fitted reply');
+assert.equal(state.cells.some(cell => cell.id === reservedSplitId), false, 'the new source child has no old fitted counterpart');
+const sourceChild = state.sourceSurface.cells.find(cell => cell.id === reservedSplitId);
+assert.ok(sourceChild, 'accepted source contains the new child while fitting waits');
+clickControl('split-cell'); // Leave the drawing gesture before selecting parts.
+clickControl('clear-selection');
+const childTriangle = sourceChild.triangles[0];
+const sourceChildPoint = projectWorld([0, 1, 2].map(axis => childTriangle.reduce((sum, id) => sum + sourceChild.positions[id][axis] / 3, 0)));
+pointer(canvas, 'pointerdown', sourceChildPoint.x, sourceChildPoint.y);
+pointer(canvas, 'pointerup', sourceChildPoint.x, sourceChildPoint.y);
+assert.equal(state.selected, reservedSplitId, 'a newly divided source panel can be selected before fitting completes');
+assert.match($('selected-note').textContent, /accepted.*updating/i);
+heldFitReplies[splitFitIndex].deliver();
+await until(() => state.revision > splitFitRevision && state.solved, 'fit divided cells after source selection');
 assert.equal(state.cells.length,4); assert.equal(state.selected,reservedSplitId);
 assert.equal(state.layout.version,3); assert.equal(state.layout.splitOrigins.length,1);
 assert.deepEqual(state.seeds,beforeSplit.seeds); assert.deepEqual(state.layout.recipe,beforeSplit.layout.recipe);
@@ -2276,12 +2320,15 @@ function leavingWarns() {
   return event.defaultPrevented;
 }
 await openStudy(splitSaved, 'durable split fixture');
+clickSeed(state.cells[0].id);
 assert.equal(leavingWarns(), false, 'opened downloaded source needs no close warning');
 const durableId = state.project.id, durableRevision = state.project.revision, durableLayout = structuredClone(state.layout);
 failNextFitReply = true;
 input('thickness', '47'); input('thickness', '47', 'change');
 await until(() => !failNextFitReply && !state.busy && !state.pending, 'synthetic fitting failure');
 assert.equal(state.solved, false);
+assert.match($('offset-status').textContent, /calculation did not finish.*changing or resetting.*save this study/s);
+assert.doesNotMatch($('offset-status').textContent, /Checking the panels/, 'terminal failure must not look like a running calculation');
 assert.equal($('save-study').disabled, false, 'failed fitting cannot prevent source saving');
 assert.equal($('export-rhino').disabled, true, 'failure still blocks production export');
 const failedFitSave = await saveStudy();
@@ -2291,6 +2338,31 @@ assert.equal(failedFitSave.thickness, 47);
 assert.deepEqual(failedFitSave.layout, durableLayout);
 assert.ok(failedFitSave.lastCalculation.revision < failedFitSave.project.revision);
 await until(() => [...recoveryRecords.values()].some(record => record.projectId === durableId && record.revision === failedFitSave.project.revision), 'recovery stores source despite failed fit');
+
+// A failed first fit has no selectable meshes. The global reset must still
+// let a designer recover an opened offset project without editing its JSON.
+const failedOpeningOffsetStudy = structuredClone(failedFitSave);
+failedOpeningOffsetStudy.name = 'offset-opening-fit-failure';
+failedOpeningOffsetStudy.panelOffsets = [{ id: failedOpeningOffsetStudy.layout.cells[0].id, offsetMm: 10 }];
+failedOpeningOffsetStudy.requiredFeatures.push('panel-offsets-v1');
+const failedOpeningText = JSON.stringify(failedOpeningOffsetStudy);
+failNextFitReply = true;
+loadFile('study-file', { name: 'offset-opening-fit-failure.json', size: failedOpeningText.length, text: async () => failedOpeningText });
+await until(() => state.name === failedOpeningOffsetStudy.name && !failNextFitReply && !state.busy && !state.pending, 'offset study opens despite failed first fit');
+assert.equal(state.solved, false); assert.equal(state.ready, false);
+assert.equal(state.cells.length, 0); assert.equal(state.selected, null);
+assert.equal($('save-study').disabled, false, 'accepted offset document can be saved with no fitted meshes');
+assert.equal($('reset-all-offsets').hidden, false);
+assert.equal($('reset-all-offsets').disabled, false);
+assert.equal($('reset-all-offsets').closest('#selection-details'), null, 'global reset is outside selection-dependent content');
+const reopenedFailedOffsets = await saveStudy();
+assert.deepEqual(reopenedFailedOffsets.panelOffsets, failedOpeningOffsetStudy.panelOffsets);
+await edit(() => clickControl('reset-all-offsets'), 'clear offsets without a fitted selection');
+assert.deepEqual(state.panelOffsets, []);
+assert.ok(state.cells.length > 0); assert.equal(state.ready, true);
+assert.deepEqual(state.layout, durableLayout, 'reset keeps the accepted source layout');
+console.log('PASS terminal fitting feedback and resetting an opened offset study without fitted panels');
+
 await openStudy(failedFitSave, 'reopen source after fitting failure');
 assert.equal(state.solved, true);
 assert.deepEqual(state.layout, durableLayout);

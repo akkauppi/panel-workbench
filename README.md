@@ -26,6 +26,19 @@ collision test.
 
 Read [From a shell to buildable panels](docs/how-panels-are-fitted.md) for an illustrated explanation of the algorithm, why neighbouring flat parts must be solved together, and what makes some arrangements difficult.
 
+## Panel offsets
+
+Select one panel and choose **Offset panel** to raise or recess its plane. Drag
+the normal-direction handle, or enter **Panel offset · mm** and Apply. The tool
+uses Flat view at assembled positions. Neighbours adjust their outlines and
+angles while the source shell remains the reference. Reset, Reset all panel
+offsets, Undo and Redo support iteration.
+
+Unresolved parts explain what failed and suggest a next edit. The offset stays
+editable and saveable; production export waits for current checks. Read the
+illustrated [offset guide](docs/offset-panels.md) for direction, source edits,
+file compatibility and Rhino repair.
+
 ## Curvature-based cell sizes
 
 In **Layout**, choose **Regularized surface** or **Organic**, enable **Adapt to

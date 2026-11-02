@@ -1,6 +1,6 @@
 # Shell preparation: readiness and remaining work
 
-Review date: 2026-10-30. The main workflow is preparing an architectural shell
+Review date: 2026-11-02. The main workflow is preparing an architectural shell
 as an editable arrangement of flat physical panels. Laser and paper models are
 secondary ways to inspect that design. A valid scale-model net is not evidence
 that the full-size stock, joints or machining operations are feasible.
@@ -238,20 +238,33 @@ These rows describe acceptance goals, not a claim that every interaction or
 external workflow is already implemented. Code-level tests, browser checks and
 native fabrication checks should be reported separately for each release.
 
-## Planned: offset a fitted panel along its normal
+## Offset a fitted panel along its normal
 
-**Not implemented.** A proposed **Offset panel** tool would work in Flat view,
-with a handle along the selected panel's normal, a signed millimetre value,
-Undo and Reset. The original shell would remain visible as the reference.
+**Offset panel** adds a persistent plane constraint in Flat view. Select one
+panel, drag its normal-direction handle or use **Panel offset · mm** and Apply.
+Reset, Reset all panel offsets, Undo and Redo remain available after an
+unresolved calculation. The source shell and its authored layout stay unchanged.
+See the illustrated [offset workflow](offset-panels.md) for directions, saved
+values, source/topology edits and practical ways to resolve failures.
 
-Moving a panel plane can keep that panel planar, but keeping shared edges
-requires recalculating its intersections with neighbouring planes and updating
-their outlines. Some junctions, especially meetings of four or more planes,
-cannot satisfy all chosen planes at once. The proposed tool therefore needs a
-preview and the existing boundary, outline, planarity and solid checks before
-acceptance; it cannot promise that every offset is feasible. Curvature sizing
-is available as a separate generation option. This section records a proposed workflow, not an
-available command or a delivery commitment.
+The baseline fitted plane provides the zero and signed direction. A nonzero
+offset fixes that panel's plane while unconstrained neighbouring planes and
+shared corners adjust. The requested distance is not silently reduced to obtain
+a valid result. Repeated calculations apply the distance once to the baseline.
+An offset can change outlines, panel dimensions and geometry beyond the immediate
+neighbours. Changing source or stock settings can change the baseline itself.
+
+The drag preview is a positioning aid. On release, boundary, outline, planarity
+and solid checks run again. Failed calculations retain the chosen offset for
+editing, saving and Rhino repair; production exports wait for valid current
+parts. Failure messages explain the geometric problem and suggest reducing or
+resetting nearby offsets, changing source corners/centres, dividing a region or
+adjusting stock. A bounded solver failure does not establish that every possible
+solution is impossible.
+
+Study v6 uses the required feature `panel-offsets-v1` when nonzero offsets exist.
+Older readers reject that feature explicitly instead of dropping the settings.
+An offset is independent of exploded inspection and curvature-based generation.
 
 ## First real-project session
 

@@ -1,3 +1,5 @@
+import { readPanelOffsets } from './panel-offsets.js';
+
 // Bounded, geometry-free calculation evidence. Fingerprints detect changes;
 // they are not cryptographic identities or a substitute for geometric checks.
 export const CALCULATION_SUMMARY_VERSION = 1;
@@ -13,10 +15,10 @@ const projectId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9.
 // visible as an unclassified issue without leaking a filename or coordinates.
 const issueTypes = [
   ['source-disconnected', /separate source-surface|separate outlines|disconnected/i, 'The source region has disconnected pieces.'],
-  ['source-opening', /past a planar source opening|source opening|support plane/i, 'The part extends past a source opening.'],
+  ['source-opening', /past a planar source opening|source opening|support plane|offset conflicts with an opening/i, 'The part extends past a source opening.'],
   ['source-rim-drift', /fitted rim|source boundary chords/i, 'The fitted rim exceeds its permitted displacement.'],
   ['nonplanar', /not flat enough|out of plane|planarity/i, 'The panel exceeds its planarity tolerance.'],
-  ['shared-junction', /shared edges cannot meet|joint corner differs/i, 'The shared joint cannot meet within its tolerance.'],
+  ['shared-junction', /shared edges cannot meet|joint corner differs|panels cannot meet at this offset|make these panels meet at this offset|offset would push a shared corner/i, 'The shared joint cannot meet within its tolerance.'],
   ['outline-crossing', /outline crosses|self.intersect|crossing|crosses itself/i, 'The outline crosses itself.'],
   ['outline-overlap', /touches or overlaps|overlapping|overlaps itself/i, 'The outline touches or overlaps itself.'],
   ['carving-fold', /carved face folds/i, 'The carved surface folds or collapses.'],
@@ -187,7 +189,7 @@ function boundedIds(values) {
   return [...new Set((Array.isArray(values) ? values : []).filter(idOK))].sort((a, b) => a - b).slice(0, MAX_PANELS);
 }
 
-const editTypes = new Set(['move-corner', 'move-cell', 'split-cell', 'merge-cells', 'delete-cell', 'remove-cell', 'add-cell', 'restore-cell', 'reset-corners', 'reset-layout', 'new-arrangement', 'settings', 'update-settings', 'units', 'orientation', 'import', 'open', 'undo', 'redo', 'edit', 'history', 'preference', 'reserve-panel-id']);
+const editTypes = new Set(['move-corner', 'move-cell', 'offset-panel', 'reset-panel-offset', 'reset-panel-offsets', 'split-cell', 'merge-cells', 'delete-cell', 'remove-cell', 'add-cell', 'restore-cell', 'reset-corners', 'reset-layout', 'new-arrangement', 'settings', 'update-settings', 'units', 'orientation', 'import', 'open', 'undo', 'redo', 'edit', 'history', 'preference', 'reserve-panel-id']);
 function eventSummary(event) {
   if (!event || typeof event !== 'object') return null;
   const result = { type: editTypes.has(event.type) ? event.type : 'other' };
@@ -217,6 +219,10 @@ function safeSettings(settings) {
       Number.isFinite(policy.maxSizeMm) && policy.minSizeMm >= 10 && policy.maxSizeMm >= policy.minSizeMm) {
     result.generatorPolicy = { type: 'curvature', version: 1, minSizeMm: policy.minSizeMm, maxSizeMm: policy.maxSizeMm };
   }
+  try {
+    const offsets = readPanelOffsets(settings?.panelOffsets);
+    if (offsets.length) result.panelOffsets = offsets.slice(0, MAX_PANELS);
+  } catch { /* Malformed context cannot introduce arbitrary fields or strings. */ }
   return result;
 }
 
