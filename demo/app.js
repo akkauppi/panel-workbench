@@ -13,6 +13,7 @@ import { summarizeCalculation, compareCalculations, createDiagnosticReport } fro
 import { initProjectUI } from './project-ui.js';
 import { computeExplodedOffsets } from './explode.js';
 import { assemblyGuideCorners } from './assembly-guides.js';
+import { readGeneratorPolicy } from './generator-policy.js';
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, createExample } from './examples.js';
 import { LOCAL_EXAMPLES } from './local-examples.js';
 import { createSolidGeometry } from './rendering.js';
@@ -27,7 +28,7 @@ const state = {
   name: 'Synthetic example', view: 'surface', color: 'timber', selected: null, selectedIds: [], multiSelect: false, mergeGroups: [],
   cornerEdits: [], cornerMode: false, splitMode: false, nextCellId: 0, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
   size: Number($('size').value), variation: Number($('variation').value) / 100,
-  pattern: readPattern(), generating: false,
+  pattern: readPattern(), generatorPolicy: null, generating: false,
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
   straightness: 0.7, thickness: 40, roundover: 2, carve: false, minimumThickness: 12, flipOutside: false,
   project: null, lastCalculation: undefined, openedCalculation: null, comparison: null, latestAcceptedEdit: null, latestRejection: null,
@@ -216,7 +217,7 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
   buildFittingOverlay();
   $('calculation-comparison').textContent = 'Fitting panels… Accepted source edits can be saved while fitting.';
   state.pending = { id: state.requested, model: newModel ? state.model : undefined,
-    size: state.size, variation: state.variation, randomSeed: state.randomSeed, pattern: state.pattern,
+    size: state.size, variation: state.variation, randomSeed: state.randomSeed, pattern: state.pattern, generatorPolicy: state.generatorPolicy,
     straightness: state.straightness, thickness: state.thickness, roundover: state.roundover,
     carve: state.carve, minimumThickness: state.minimumThickness, flipOutside: state.flipOutside,
     seeds: state.seeds.length ? state.seeds.map(s => ({ ...s, position: [...s.position] })) : null,
@@ -661,6 +662,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
   }
   disposeGroup(cellGroup); disposeGroup(seedGroup); disposeGroup(cornerGroup);
   if (!preserveSettings) {
+    state.generatorPolicy = null;
     state.pattern = readPattern(pattern);
     const ideal = initialSize ?? Math.sqrt(state.analysis.area / 130 / 0.866);
     const step = initialSize === null ? Math.max(1, Math.round(ideal / 50)) : 1;
@@ -817,11 +819,19 @@ function scheduleEdit() {
   updateExportAvailability(); updateEditAvailability();
 }
 function syncDesignControls() {
+  // An explicitly chosen curvature maximum may exceed the mesh's suggested
+  // uniform slider range. Switching the draft back to uniform must retain it.
+  $('size').min = Math.min(Number($('size').min), state.size);
+  $('size').max = Math.max(Number($('size').max), state.size);
+  if (state.generatorPolicy) $('size').step = 'any';
   for (const [id, key, factor] of [['size', 'size', 1], ['variation', 'variation', 100], ['straightness', 'straightness', 100], ['thickness', 'thickness', 1], ['roundover', 'roundover', 1], ['minimum-thickness', 'minimumThickness', 1]]) $(id).value = state[key] * factor;
   $('pattern-type').value = state.pattern.type;
   $('pattern-angle').value = state.pattern.angle;
   $('pattern-frequency').value = state.pattern.frequency;
   $('pattern-regularity').value = (state.pattern.regularity ?? .7) * 100;
+  $('curvature-sizing').checked = !!state.generatorPolicy;
+  $('curvature-min-size').value = state.generatorPolicy?.minSizeMm ?? Math.max(10, Math.round(state.size * .75));
+  $('curvature-max-size').value = state.generatorPolicy?.maxSizeMm ?? state.size;
   $('carve-inner').checked = state.carve;
   $('flip-outside').checked = state.flipOutside;
   if (state.pattern.type !== 'organic' && state.edit) {
@@ -834,17 +844,22 @@ function syncDesignControls() {
 }
 function updatePatternControls() {
   const type = $('pattern-type').value;
+  const supportsSizing = ['organic', 'regularized'].includes(type);
+  const adaptive = supportsSizing && $('curvature-sizing').checked;
   $('variation-control').hidden = type !== 'organic';
   $('pattern-angle-control').hidden = !['hexagonal', 'geodesic'].includes(type);
   $('pattern-frequency-control').hidden = type !== 'geodesic';
   $('pattern-regularity-control').hidden = type !== 'regularized';
-  $('size-control').hidden = type === 'geodesic';
-  $('size').disabled = type === 'geodesic';
+  $('size-control').hidden = type === 'geodesic' || adaptive;
+  $('size').disabled = type === 'geodesic' || adaptive;
+  $('curvature-sizing-control').hidden = !supportsSizing;
+  $('curvature-range').hidden = !adaptive;
   $('variation').disabled = type !== 'organic';
   $('pattern-help').textContent = type === 'hexagonal' ? 'Flat surfaces; edges and openings clip the lattice.'
     : type === 'geodesic' ? 'Spherical surfaces; boundary cells are clipped.'
-    : type === 'regularized' ? 'Surface relaxation towards more even cells.' : 'Randomized surface layout.';
-  $('size-help').hidden = type !== 'organic';
+    : type === 'regularized' ? adaptive ? 'Regularized cells keep local size differences.' : 'Surface relaxation towards more even cells.' : 'Randomized surface layout.';
+  $('size-help').hidden = !supportsSizing;
+  $('size-help').textContent = adaptive ? 'Smaller cells at bends; up to 240.' : 'Cell size sets approximate centre spacing.';
   $('generation-help').textContent = 'Replaces edits. Undo restores them.';
 }
 function restoreSnapshot(entry) {
@@ -1354,6 +1369,9 @@ async function freshLayout({ applySettings = false } = {}) {
     if (applySettings) {
       candidate.pattern = readPattern({ type: $('pattern-type').value, angle: Number($('pattern-angle').value), frequency: Number($('pattern-frequency').value), regularity: Number($('pattern-regularity').value) / 100 });
       candidate.size = Number($('size').value); candidate.variation = Number($('variation').value) / 100;
+      candidate.generatorPolicy = readGeneratorPolicy(['organic', 'regularized'].includes(candidate.pattern.type) && $('curvature-sizing').checked
+        ? { type: 'curvature', version: 1, minSizeMm: Number($('curvature-min-size').value), maxSizeMm: Number($('curvature-max-size').value) } : null, candidate.pattern);
+      if (candidate.generatorPolicy) candidate.size = candidate.generatorPolicy.maxSizeMm;
       if (candidate.pattern.type === 'organic') candidate.randomSeed++;
     }
     Object.assign(candidate, { seeds: [], mergeGroups: [], cornerEdits: [], layout: null, directBase: null });
@@ -1405,7 +1423,7 @@ $('cell-weight').addEventListener('input', () => {
   $('cell-weight-value').textContent = `${Math.round(seed.weight * 100)}%`;
 });
 $('cell-weight').addEventListener('change', finishPendingEdit);
-for (const id of ['size', 'variation', 'pattern-type', 'pattern-angle', 'pattern-frequency', 'pattern-regularity']) $(id).addEventListener('input', () => {
+for (const id of ['size', 'variation', 'pattern-type', 'pattern-angle', 'pattern-frequency', 'pattern-regularity', 'curvature-sizing', 'curvature-min-size', 'curvature-max-size']) $(id).addEventListener('input', () => {
   cancelGeneration();
   updatePatternControls(); updateControlLabels();
   setStatus('Layout settings are ready. Choose New arrangement to replace the layout; Undo restores your edits.');
@@ -1636,7 +1654,7 @@ function validateStudyGeometry(study) {
   const factor = { mm: 1, cm: 10, m: 1000 }[study.units];
   return validateDesignGeometry({
     model: { vertices: study.rawModel.vertices.map(point => point.map(value => value * factor)), triangles: study.rawModel.triangles },
-    seeds: study.seeds, size: study.size, pattern: study.pattern, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
+    seeds: study.seeds, size: study.size, pattern: study.pattern, generatorPolicy: study.generatorPolicy, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
 }
 async function openStudyDocument(study, { recovered = false, checkpoint = true, activeAt, automatic = false } = {}) {
   const opening = ++studyOpenRevision;

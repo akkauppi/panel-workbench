@@ -1,5 +1,6 @@
-import { analyzeModel, generateSeeds, generateCellLayout } from './geometry.js';
+import { analyzeModel, generateSeeds, generateAdaptiveSeeds, generateCellLayout } from './geometry.js';
 import { readPattern } from './pattern.js';
+import { readGeneratorPolicy } from './generator-policy.js';
 import { measureLayoutQuality } from './quality.js';
 
 const add = (a, b) => a.map((x, i) => x + b[i]);
@@ -133,10 +134,12 @@ function sourceComponents(model, seeds) {
 
 function centroid(cell) {
   let area = 0, center = [0, 0, 0];
-  for (const ids of cell.triangles) {
-    const [a, b, c] = ids.map(id => cell.positions[id]), weight = length(cross(sub(b, a), sub(c, a))) / 2;
+  for (let i = 0; i < cell.triangles.length; i++) {
+    const [a, b, c] = cell.triangles[i].map(id => cell.positions[id]);
+    const weight = length(cross(sub(b, a), sub(c, a))) / 2 * (cell.triangleDensities?.[i] ?? 1);
     area += weight; center = add(center, mul(add(add(a, b), c), weight / 3));
   }
+  if (!(area > 0) || !Number.isFinite(area)) throw new Error('The requested cell-size range cannot be regularized. Use a narrower range.');
   return mul(center, 1 / area);
 }
 
@@ -171,36 +174,42 @@ function energy(surface, seeds, initial, regularity) {
   let total = 0;
   for (const cell of surface.cells) {
     const origin = current.get(cell.id);
-    for (const triangle of cell.triangles) {
-      const points = triangle.map(id => cell.positions[id]), q = points.map(p => sub(p, origin)), area = length(cross(sub(points[1], points[0]), sub(points[2], points[0]))) / 2;
+    let mass = 0;
+    for (let i = 0; i < cell.triangles.length; i++) {
+      const points = cell.triangles[i].map(id => cell.positions[id]), q = points.map(p => sub(p, origin));
+      const area = length(cross(sub(points[1], points[0]), sub(points[2], points[0]))) / 2 * (cell.triangleDensities?.[i] ?? 1);
+      mass += area;
       total += regularity * area / 6 * (q.reduce((sum, p) => sum + dot(p, p), 0) + dot(q[0], q[1]) + dot(q[1], q[2]) + dot(q[2], q[0]));
     }
-    const movement = sub(origin, initial.get(cell.id)); total += (1 - regularity) * cell.area * dot(movement, movement);
+    const movement = sub(origin, initial.get(cell.id));
+    total += (1 - regularity) * (cell.triangleDensities ? mass : cell.area) * dot(movement, movement);
   }
   return total;
 }
 
 /** Deterministic surface-constrained centroid relaxation. Regularity blends
- * each cell's area centroid with its initial site at a fixed iteration budget;
+ * each cell's (optionally density-weighted) centroid with its initial site;
  * it does not simply change the number of solver iterations. Ownership uses
  * approximate intrinsic distance. Projection stays on the currently owned
  * source patch and intrinsic step limits prevent shortcuts across close folds.
  */
 export function generateRegularizedLayout(model, input, options = {}) {
   const pattern = readPattern(input), size = Number(options.size);
+  const policy = readGeneratorPolicy(options.generatorPolicy, pattern);
   if (pattern.type !== 'regularized') throw new Error('Choose the regularized surface pattern.');
   if (!Number.isFinite(size) || size < 10) throw new Error('Set a regularized cell spacing of at least 10 mm.');
   if (options.cornerEdits?.length) throw new Error('Use direct corner editing for a regularized layout.');
   // Keep the initial sampler identical to the ordinary .3-variation baseline;
   // the Regularity control affects relaxation rather than a second jitter knob.
-  let seeds = generateSeeds(model, size, .3, options.randomSeed ?? 7);
+  const adaptive = policy ? generateAdaptiveSeeds(model, policy, .3, options.randomSeed ?? 7) : null;
+  let seeds = adaptive?.seeds ?? generateSeeds(model, size, .3, options.randomSeed ?? 7);
   if (analyzeModel(model).triangleCount * seeds.length * 9 > 12_000_000) throw new Error('The source is too detailed for the regularization work budget. Simplify its mesh or use larger cells.');
   const components = sourceComponents(model, seeds), initial = new Map(seeds.map(seed => [seed.id, [...seed.position]]));
   const baseline = generateCellLayout(model, seeds, { size });
   let metricPrepared, fields;
   const calculate = sites => {
     fields = new Map();
-    return generateCellLayout(model, sites, { size, distanceField(position, prepared) {
+    return generateCellLayout(model, sites, { size, triangleDensity: adaptive?.sizing.triangleDensity, distanceField(position, prepared) {
       metricPrepared = prepared; const field = triangleDistanceField(position, prepared); fields.set(position, field); return field;
     } });
   };
@@ -209,8 +218,10 @@ export function generateRegularizedLayout(model, input, options = {}) {
   if (initialProblem) throw new Error(initialProblem);
   const initialMetric = diagnosticsFor(surface), iterationLog = [];
   let objective = energy(surface, seeds, initial, pattern.regularity), acceptedIterations = 0;
+  const initialObjective = objective;
   for (let iteration = 0; iteration < 8 && pattern.regularity > 0; iteration++) {
     const currentFields = fields, byCell = new Map(surface.cells.map(cell => [cell.id, cell]));
+    let maxStepRatio = 0;
     const candidates = seeds.map(seed => {
       const cell = byCell.get(seed.id), target = add(mul(initial.get(seed.id), 1 - pattern.regularity), mul(centroid(cell), pattern.regularity));
       const triangles = cell.triangles.map(ids => ({ points: ids.map(id => cell.positions[id]) }));
@@ -222,20 +233,25 @@ export function generateRegularizedLayout(model, input, options = {}) {
         const v = dot(cross(ap, ac), normal) / denominator, w = dot(cross(ab, ap), normal) / denominator;
         const values = address.triangle.graphIds.map(id => currentFields.get(seed.position)[id]);
         const travel = [1 - v - w, v, w].reduce((sum, value, i) => Math.abs(value) < 1e-12 ? sum : sum + value * values[i], 0);
-        if (Number.isFinite(travel) && travel <= size * .45) { projected = proposal; break; }
+        const localSize = adaptive ? address.triangle.graphIds.reduce((sum, id, i) => sum + [1 - v - w, v, w][i] * adaptive.sizing.vertexSizes[id], 0) : size;
+        if (Number.isFinite(travel) && travel <= localSize * .45) {
+          projected = proposal; maxStepRatio = Math.max(maxStepRatio, travel / localSize); break;
+        }
       }
       return { ...seed, position: [...projected] };
     });
     const maxMovement = Math.max(...candidates.map((seed, i) => distance(seed.position, seeds[i].position)));
-    if (maxMovement < size * 1e-5) break;
+    if (maxMovement < (policy?.minSizeMm ?? size) * 1e-5) break;
     const proposed = calculate(candidates), nextObjective = energy(proposed, candidates, initial, pattern.regularity);
     const problem = layoutProblem(proposed, seeds.length), accepted = !problem && nextObjective < objective - Math.max(1e-5, objective * 1e-8);
-    iterationLog.push({ iteration: iteration + 1, accepted, maxMovement, objective: nextObjective, ...(problem ? { reason: problem } : {}) });
+    iterationLog.push({ iteration: iteration + 1, accepted, maxMovement, objective: nextObjective,
+      ...(adaptive ? { maxStepRatio } : {}), ...(problem ? { reason: problem } : {}) });
     if (!accepted) break;
     seeds = candidates; surface = proposed; objective = nextObjective; acceptedIterations++;
   }
-  return { seeds, surface, diagnostics: { method: 'triangle-interior surface distances with anchored area-centroid relaxation',
+  return { seeds, surface, diagnostics: { method: adaptive ? 'triangle-interior surface distances with anchored density-weighted centroid relaxation' : 'triangle-interior surface distances with anchored area-centroid relaxation',
     limitation: 'Distances and local centroids approximate the intrinsic surface metric; results depend on mesh resolution and do not guarantee hexagons or convex panels.',
     iterations: acceptedIterations, iterationBudget: 8, regularity: pattern.regularity, ...components,
+    ...(adaptive ? { sizing: adaptive.sizing.diagnostics, initialObjective } : {}),
     baseline: diagnosticsFor(baseline), initialMetric, final: diagnosticsFor(surface), iterationLog } };
 }

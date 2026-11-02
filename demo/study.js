@@ -1,5 +1,6 @@
 import { readLayout, layoutRecipe, nextLayoutCellId } from './layout.js';
 import { readPattern } from './pattern.js';
+import { readGeneratorPolicy } from './generator-policy.js';
 import { STUDY_VERSION, CURRENT_ENGINES, assertStudySize, utf8Bytes, createProjectMetadata,
   readProjectMetadata, readProducer, readEngines, requiredStudyFeatures, readRequiredFeatures, readCalculationMetadata } from './project-document.js';
 import { readCalculationSummary } from './project-feedback.js';
@@ -35,6 +36,9 @@ export function captureDesign(state) {
   const entries = Object.entries(defaults).filter(([key]) => key !== 'layout' && key !== 'directBase');
   const result = structuredClone(Object.fromEntries(entries.map(([key, fallback]) => [key, state[key] ?? fallback])));
   result.pattern = readPattern(state.pattern);
+  // History uses explicit null so Object.assign can turn an earlier adaptive
+  // policy off. The transport reader below omits null for legacy byte stability.
+  result.generatorPolicy = readGeneratorPolicy(state.generatorPolicy, result.pattern);
   for (const key of ['layout', 'directBase']) {
     const layout = state[key] ?? null;
     result[key] = layout && immutableLayouts.has(layout) ? layout : structuredClone(layout);
@@ -155,6 +159,8 @@ export function readStudy(input) {
   const cornerEdits = readCornerEdits(study.version < 3 ? [] : study.cornerEdits, seeds);
   const randomSeed = study.randomSeed === undefined ? 1 : study.randomSeed;
   if (!isId(randomSeed)) throw new Error('The study contains an invalid arrangement seed.');
+  const pattern = readPattern(study.pattern), generatorPolicy = readGeneratorPolicy(study.generatorPolicy, pattern);
+  if (generatorPolicy && study.version < 6) throw new Error('Curvature sizing requires study file version 6 and its required-feature declaration. Keep the original file unchanged.');
   const view = study.view ?? 'surface';
   if (!['surface', 'flat', 'solid', 'reference'].includes(view)) throw new Error('The study contains an invalid view.');
   if (study.name !== undefined && typeof study.name !== 'string') throw new Error('The study contains an invalid name.');
@@ -163,7 +169,8 @@ export function readStudy(input) {
     // their source layout before the document is installed or saved as v6.
     format: 'sauna-cell-study', version: study.version >= 4 ? study.version : 3, name: study.name || 'Opened study',
     rawModel: readModel(study.rawModel, study.units), units: study.units, up: study.up,
-    seeds, mergeGroups, cornerEdits, pattern: readPattern(study.pattern),
+    seeds, mergeGroups, cornerEdits, pattern,
+    ...(generatorPolicy ? { generatorPolicy } : {}),
     size: number(study.size, undefined, Number.MIN_VALUE, Infinity, 'cell size'),
     variation: number(study.variation, undefined, 0, 1, 'variation'), randomSeed,
     straightness: number(study.straightness, .7, 0, 1, 'border straightness'),

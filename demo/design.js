@@ -1,11 +1,12 @@
-import { generateSeeds, generateCellLayout } from './geometry.js';
+import { generateSeeds, generateAdaptiveSeeds, generateCellLayout } from './geometry.js';
 import { captureLayout, restoreLayout, layoutRecipe } from './layout.js';
 import { readPattern } from './pattern.js';
+import { readGeneratorPolicy } from './generator-policy.js';
 import { generateStructuredLayout } from './structured.js';
 import { generateRegularizedLayout } from './regularized.js';
 
 const generatePattern = (model, pattern, inputs) => pattern.type === 'regularized'
-  ? generateRegularizedLayout(model, pattern, { size: inputs.size, randomSeed: inputs.randomSeed })
+  ? generateRegularizedLayout(model, pattern, { size: inputs.size, randomSeed: inputs.randomSeed, generatorPolicy: inputs.generatorPolicy })
   : generateStructuredLayout(model, pattern, { size: inputs.size, mergeGroups: inputs.mergeGroups });
 
 // During the transition to direct graph editing, legacy tools produce a new
@@ -13,10 +14,13 @@ const generatePattern = (model, pattern, inputs) => pattern.type === 'regularize
 // part of this recipe and must never repartition an accepted design.
 export function resolveSourceLayout(model, inputs, { strict = false } = {}) {
   const pattern = readPattern(inputs.pattern);
+  const generatorPolicy = readGeneratorPolicy(inputs.generatorPolicy, pattern);
   let generated = null;
   let seeds = inputs.seeds?.length ? inputs.seeds : null;
   if (!seeds) {
-    if (pattern.type === 'organic') seeds = generateSeeds(model, inputs.size, inputs.variation, inputs.randomSeed);
+    if (pattern.type === 'organic') seeds = generatorPolicy
+      ? generateAdaptiveSeeds(model, generatorPolicy, inputs.variation, inputs.randomSeed).seeds
+      : generateSeeds(model, inputs.size, inputs.variation, inputs.randomSeed);
     else {
       generated = generatePattern(model, pattern, inputs);
       seeds = generated.seeds;

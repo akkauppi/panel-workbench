@@ -8,6 +8,8 @@
  * those independently flattened parts join without gaps.
  */
 
+import { buildCurvatureSizing, sampleAdaptiveSeeds } from './curvature-sizing.js';
+
 const cache = new WeakMap();
 const WELD = 1e-5;
 const AREA_EPS = 1e-9;
@@ -143,6 +145,12 @@ export function generateSeeds(model, targetSize = 600, variation = 0.35, seed = 
     }
   }
   return seeds;
+}
+
+/** Optional curvature-aware generator; the existing uniform generator is unchanged. */
+export function generateAdaptiveSeeds(model, policy, variation = .3, seed = 7) {
+  const prepared = prepare(model), sizing = buildCurvatureSizing(prepared, policy);
+  return { seeds: sampleAdaptiveSeeds(prepared, sizing, variation, randomGenerator(seed)), sizing };
 }
 
 function nearestTriangle(point, prepared) {
@@ -411,7 +419,7 @@ function finalizeCell(builder, preservedLoops = null) {
   if (crossingOutlines(outline2d)) issues.push('The flattened outline crosses itself. Move its centre or use smaller cells.');
   const { projected, ...measures } = fit;
   return { id: builder.id, seed: [...builder.seed], weight: builder.weight, positions, triangles, loops: topology.loops,
-    outline2d, loopAreas, ...measures, neighbors: [], maxSeamGap: 0, valid: issues.length === 0,
+    outline2d, loopAreas, ...measures, ...(builder.triangleDensities ? { triangleDensities: builder.triangleDensities } : {}), neighbors: [], maxSeamGap: 0, valid: issues.length === 0,
     issues, sourceComponentCount: topology.sourceComponentCount, holeCount: loopAreas.filter(a => a < -AREA_EPS).length, outerLoopCount };
 }
 
@@ -541,13 +549,17 @@ function unionSurfaceCells(cells, group) {
   const survivor = cells.find(cell => cell.id === group.id);
   const builder = { id: group.id, seed: survivor.seed, weight: survivor.weight, positions: [], triangles: [] };
   const vertices = new Map();
+  if (cells.every(cell => cell.triangleDensities?.length === cell.triangles.length)) builder.triangleDensities = [];
   for (const cell of cells) {
     const remap = cell.positions.map(point => {
       const key = positionKey(point);
       if (!vertices.has(key)) { vertices.set(key, builder.positions.length); builder.positions.push([...point]); }
       return vertices.get(key);
     });
-    for (const triangle of cell.triangles) builder.triangles.push(triangle.map(id => remap[id]));
+    for (let i = 0; i < cell.triangles.length; i++) {
+      builder.triangles.push(cell.triangles[i].map(id => remap[id]));
+      if (builder.triangleDensities) builder.triangleDensities.push(cell.triangleDensities[i]);
+    }
   }
   const topology = boundaryLoops(builder.triangles);
   if (topology.openChains || topology.nonManifoldEdges || topology.inconsistentEdges) {
@@ -642,6 +654,7 @@ export function generateCells(model, seeds, options = {}) {
     unique.push({ id: seeds[i].id ?? i, position, weight: Math.max(.1, Math.min(3, Number(seeds[i].weight) || 1)) });
   }
   const builders = unique.map(s => ({ id: s.id, seed: s.position, weight: s.weight, positions: [], triangles: [], vertexMap: new Map() }));
+  if (options.triangleDensity) for (const builder of builders) builder.triangleDensities = [];
   const spacing = Number(options.size) || Math.sqrt(prepared.area / (unique.length * .8660254));
   const fields = unique.map(s => {
     if (options.score) {
@@ -659,6 +672,8 @@ export function generateCells(model, seeds, options = {}) {
   const values = Array.from({ length: unique.length }, () => [0, 0, 0]);
   for (let ti = 0; ti < prepared.triangles.length; ti++) {
     const triangle = prepared.triangles[ti];
+    const density = options.triangleDensity?.(ti);
+    if (options.triangleDensity && (!Number.isFinite(density) || density <= 0)) throw new Error('A curvature density must be positive and finite.');
     let upperBound = Infinity;
     for (let i = 0; i < unique.length; i++) {
       for (let k = 0; k < 3; k++) values[i][k] = fields[i][triangle.graphIds[k]];
@@ -708,7 +723,10 @@ export function generateCells(model, seeds, options = {}) {
       for (let j = 1; j < ids.length - 1; j++) {
         const tri = [ids[0], ids[j], ids[j + 1]];
         const [a, b, c] = tri.map(i => builder.positions[i]);
-        if (length(cross(sub(b, a), sub(c, a))) * 0.5 > AREA_EPS) builder.triangles.push(tri);
+        if (length(cross(sub(b, a), sub(c, a))) * 0.5 > AREA_EPS) {
+          builder.triangles.push(tri);
+          if (builder.triangleDensities) builder.triangleDensities.push(density);
+        }
       }
     }
     if (options.onProgress && ti % 1000 === 0) options.onProgress(ti / prepared.triangles.length);
@@ -876,7 +894,7 @@ export function generateCellLayout(model, seeds, options = {}) {
   const { size, mergeGroups = [], cornerEdits = [] } = options;
   if (!Array.isArray(cornerEdits) || cornerEdits.length > 128) throw new Error('Use a list of at most 128 corner edits.');
   if ((options.score || options.distanceField) && cornerEdits.length) throw new Error('Use direct corner editing for a structured or regularized layout.');
-  const base = generateCells(model, seeds, { size, score: options.score, distanceField: options.distanceField }), baseNetwork = cornerNetwork(base.cells), prepared = prepare(model);
+  const base = generateCells(model, seeds, { size, score: options.score, distanceField: options.distanceField, triangleDensity: options.triangleDensity }), baseNetwork = cornerNetwork(base.cells), prepared = prepare(model);
   const spacing = Number(size) || Math.sqrt(prepared.area / (seeds.length * .8660254));
   const baseCorners = baseNetwork.corners.map(corner => ({ ...corner,
     id: `corner:${corner.owners.join('-')}:${corner.key}`,
@@ -912,7 +930,7 @@ export function generateCellLayout(model, seeds, options = {}) {
     }
     surfaceAddress(edit.target, prepared);
   }
-  const surface = cornerEdits.length ? generateCells(model, seeds, { size,
+  const surface = cornerEdits.length ? generateCells(model, seeds, { size, triangleDensity: options.triangleDensity,
     adjustFields: (mesh, sites, fields) => applyCornerFields(mesh, sites, fields, cornerEdits),
   }) : base;
   const network = cornerEdits.length ? cornerNetwork(surface.cells) : baseNetwork;

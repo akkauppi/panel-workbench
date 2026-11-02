@@ -105,6 +105,15 @@ For organic generation, seed-distance fields are computed along the mesh graph
 and interpolated/clipped within source triangles. This approximates surface
 distance; it is not an exact continuous-geodesic calculation.
 
+Organic and regularized arrangements can also use optional
+[curvature sizing](curvature-sizing.md): more, smaller cells around tighter bends
+and larger cells on flatter areas, within the chosen target-spacing range. In
+the regularized pattern, density-weighted relaxation preserves this variation
+instead of pulling the arrangement toward equal physical cell areas. The
+nominal 20° normal-turn rule is a sizing heuristic, not a panel-angle or
+source-deviation guarantee. It changes preparation of a new source arrangement;
+the shared-plane and stock checks below still determine which parts are usable.
+
 A direct edit changes that graph. The application projects the move onto a local
 connected region of the mesh, updates the affected seams and rebuilds affected
 cell patches. Boundary junctions stay attached to their source perimeter.

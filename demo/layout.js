@@ -1,5 +1,6 @@
 import { rebuildSurfaceCells } from './geometry.js';
 import { readPattern } from './pattern.js';
+import { readGeneratorPolicy } from './generator-policy.js';
 
 // Authored source geometry. Generator inputs are provenance; fitted planes and
 // stock meshes are deliberately absent. Local mesh coordinates retain their
@@ -48,8 +49,9 @@ function readEdit(edit) {
 /** Canonical field order makes recipe equality independent of JSON key order. */
 export function layoutRecipe(inputs) {
   object(inputs, 'recipe');
-  let pattern;
-  try { pattern = readPattern(inputs.pattern); } catch (error) { fail(`has invalid pattern settings: ${error.message}`); }
+  let pattern, generatorPolicy;
+  try { pattern = readPattern(inputs.pattern); generatorPolicy = readGeneratorPolicy(inputs.generatorPolicy, pattern); }
+  catch (error) { fail(`has invalid generation settings: ${error.message}`); }
   const engine = pattern.type === 'organic' ? 'seed-fields-v1' : pattern.type === 'regularized' ? 'regularized-surface-v1' : 'structured-v1';
   if (inputs.engine !== undefined && inputs.engine !== engine) fail('uses an unsupported or inconsistent recipe engine');
   const seeds = list(inputs.seeds, 'recipe seeds', 1, 500).map(seed => ({
@@ -73,7 +75,8 @@ export function layoutRecipe(inputs) {
   if (new Set(cornerEdits.map(edit => edit.id)).size !== cornerEdits.length || cornerEdits.some(edit => edit.owners.flat().some(member => !known.has(member)))) fail('has invalid recipe corner references');
   if (engine !== 'seed-fields-v1' && cornerEdits.length) fail('cannot apply legacy corner targets to this pattern');
   return { engine, ...(engine !== 'seed-fields-v1' ? { pattern } : {}), seeds,
-    size: number(inputs.size, 'recipe cell size', Number.MIN_VALUE), mergeGroups, cornerEdits };
+    size: number(inputs.size, 'recipe cell size', Number.MIN_VALUE), mergeGroups, cornerEdits,
+    ...(generatorPolicy ? { generatorPolicy } : {}) };
 }
 
 function readCorner(corner) {

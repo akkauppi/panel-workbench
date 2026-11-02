@@ -119,7 +119,8 @@ test('shareable report allowlists context and excludes private geometry and arbi
   const input = result();
   const report = createDiagnosticReport({ project: { id: 'project-123', revision: 4, name: 'private-name', path: '/home/private' },
     build: '2026-10-30T12:00:00Z', result: input, previousSummary: summarizeCalculation(input), selectedIds: [1, 0, 1, -1],
-    settings: { size: 300, thickness: 40, carve: false, units: 'mm', up: 'z', name: 'private-name', rawModel: input, seeds: [{ position: [1, 2, 3] }], pattern: { type: 'regularized', angle: 20, frequency: 2, regularity: .7, name: 'private-name' } },
+    settings: { size: 300, thickness: 40, carve: false, units: 'mm', up: 'z', name: 'private-name', rawModel: input, seeds: [{ position: [1, 2, 3] }], pattern: { type: 'regularized', angle: 20, frequency: 2, regularity: .7, name: 'private-name' },
+      generatorPolicy: { type: 'curvature', version: 1, minSizeMm: 180, maxSizeMm: 300, name: 'private-name', source: input } },
     latestAcceptedEdit: { type: 'move-cell', cellId: 0, affectedCellIds: [1, 0], target: [1, 2, 3], source: input },
     latestRejection: { type: 'split-cell', message: 'Cannot split private-name at [1,2,3] in /home/private.3dm', cellId: 1, start: [1, 2, 3] },
   });
@@ -128,6 +129,7 @@ test('shareable report allowlists context and excludes private geometry and arbi
   assert.deepEqual(report.selectedIds, [0, 1]);
   assert.equal(report.project.revision, 4); assert.equal(report.calculation.counts.panels, 2);
   assert.deepEqual(report.settings.pattern, { type: 'regularized', angle: 20, frequency: 2, regularity: .7 });
+  assert.deepEqual(report.settings.generatorPolicy, { type: 'curvature', version: 1, minSizeMm: 180, maxSizeMm: 300 });
   assert.equal(report.latestRejection.issue.code, 'edit-rejected');
   assert.deepEqual(report.comparison.changedIds, []);
   assert.equal(report.privacy.includesProjectFile, false);

@@ -238,6 +238,21 @@ These rows describe acceptance goals, not a claim that every interaction or
 external workflow is already implemented. Code-level tests, browser checks and
 native fabrication checks should be reported separately for each release.
 
+## Planned: offset a fitted panel along its normal
+
+**Not implemented.** A proposed **Offset panel** tool would work in Flat view,
+with a handle along the selected panel's normal, a signed millimetre value,
+Undo and Reset. The original shell would remain visible as the reference.
+
+Moving a panel plane can keep that panel planar, but keeping shared edges
+requires recalculating its intersections with neighbouring planes and updating
+their outlines. Some junctions, especially meetings of four or more planes,
+cannot satisfy all chosen planes at once. The proposed tool therefore needs a
+preview and the existing boundary, outline, planarity and solid checks before
+acceptance; it cannot promise that every offset is feasible. Curvature sizing
+is available as a separate generation option. This section records a proposed workflow, not an
+available command or a delivery commitment.
+
 ## First real-project session
 
 1. Import the shell, check source units and orientation, then download a study

@@ -6,6 +6,10 @@ architectural shell: surface-attached layout editing, feasible planar panels,
 matched joints and inspectable physical parts. Scale-model unfolding is a
 secondary consumer of those results.
 
+The curvature-sizing assessment below was added on 2026-11-02. It supports an
+optional initial-arrangement method; it does not change the role of authored
+source geometry or replace coupled panel fitting.
+
 The integration costs below are engineering assessments, not measured estimates
 or completed integrations. None of these libraries alone replaces the coupled
 panel-fitting problem.
@@ -128,6 +132,35 @@ distinguishes generally LGPL kernel/support libraries from many GPL higher-level
 packages and offers commercial licensing. It is not a uniformly permissive
 dependency. This review did not establish a ready browser integration for our
 required editing operations.
+
+## Curvature sizing and density-weighted relaxation
+
+The optional [curvature-sizing workflow](curvature-sizing.md) allocates more
+cells around tighter bends before planar fitting. It adds no external geometry
+library. Its versioned policy applies to organic and regularized generation;
+accepted source graphs remain authoritative after generation and manual editing.
+
+[Du, Faber and Gunzburger's CVT survey](https://people.sc.fsu.edu/~jburkardt/classes/urop_2016/du_faber_gunzburger.pdf)
+provides the weighted-centroid/quadratic-energy basis. For a locally smooth
+two-dimensional field, the asymptotic spacing relation gives relaxation density
+`rho ∝ h^-4`; initial centre allocation instead follows `h^-2`.
+[Fu, Hu and Adams](https://www.sciencedirect.com/science/article/pii/S0021999117300670)
+state the general dimension-dependent relation. Anchoring, approximate surface
+distances and a bounded iteration count limit how closely the application
+approaches that ideal.
+
+[Dunyach et al.](https://ls7-gv.cs.tu-dortmund.de/publications/2013-remeshing.pdf)
+derive bounded triangle spacing from curvature and an approximation tolerance.
+Our nominal 20° normal-turn heuristic is a different choice, not their error
+formula. [CGAL's adaptive sizing field](https://doc.cgal.org/latest/PMP_Remeshing/classCGAL_1_1Polygon__mesh__processing_1_1Adaptive__sizing__field.html)
+is a useful reference implementation for future comparisons, with explicit
+minimum/maximum lengths and curvature-estimation neighbourhood parameters.
+
+Evaluate actual size allocation on mixed flat/bent shells, sensitivity to
+triangulation and noise, source coverage, and fitted/solid failures separately.
+Curvature adaptation neither aligns seams to every crease nor guarantees valid
+flat panels. An increase in global cell-area variation can be intentional; it
+must not automatically be scored as deterioration.
 
 ## The separate planar-fitting research question
 

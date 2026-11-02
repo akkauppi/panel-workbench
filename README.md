@@ -26,6 +26,19 @@ collision test.
 
 Read [From a shell to buildable panels](docs/how-panels-are-fitted.md) for an illustrated explanation of the algorithm, why neighbouring flat parts must be solved together, and what makes some arrangements difficult.
 
+## Curvature-based cell sizes
+
+In **Layout**, choose **Regularized surface** or **Organic**, enable **Adapt to
+curvature**, and set the minimum and maximum target spacing in millimetres.
+Choose **New arrangement** to apply it. Tighter bends receive smaller cells;
+regularization retains the size differences. Undo restores the previous layout.
+The range and accepted source are saved with the study. Existing projects keep
+their layouts when opened or when stock settings change.
+
+These are spacing targets, not hard panel dimensions or a guarantee of better
+fitting. Requests above 240 cells are rejected with an explanation. See the
+[curvature sizing guide](docs/curvature-sizing.md) for the method and limits.
+
 ## Saved projects, recovery and feedback
 
 Studies store the source mesh, authored layout, settings, project ID and revision.
@@ -90,6 +103,10 @@ npm run build:pages
 The optional browserless interaction suite needs jsdom. Install it separately and run `JSDOM_MODULE=/path/to/jsdom/lib/api.js npm run test:ui`. That suite mocks rendering; it does not verify actual WebGL appearance or hardware frame rate.
 
 Real Chromium checks are available in `scripts/check-project-browser.cjs` (editing, downloads and recovery), `scripts/check-local-save-browser.cjs` (automatic resume, opt-out and leave-page warnings), `scripts/check-recovery-browser.cjs` (large snapshots and storage transactions), and `scripts/check-explode-browser.cjs` (exploded view, guides and matching downloads). They use an optional Playwright installation; see each script header for environment variables. Use `PANEL_BROWSER_URL` with the project check to test the packaged or deployed site.
+
+`scripts/check-curvature-browser.cjs` exercises adaptive Regularized generation,
+staged controls, history, saved projects, local resume and rejected ranges on a
+public synthetic shell with flat and curved regions.
 
 This repository is self-contained: app source is in demo/, serving code in server.mjs, synthetic tests alongside the app, and packaging tools in scripts/. GitHub Actions runs the tests and publishes only the reviewed static app from dist/panel-workbench-pages/ to Pages on each main-branch push. Configure Settings > Pages > Source as GitHub Actions.
 

@@ -142,6 +142,16 @@
           </div>
           <div class="ribbon-group-caption">Cell spacing</div>
         </div>
+        <div id="curvature-sizing-control" class="ribbon-group">
+          <div class="ribbon-group-content curvature-sizing-fields">
+            <label class="checkbox-row"><input id="curvature-sizing" type="checkbox"><span>Adapt to curvature</span></label>
+            <div id="curvature-range" hidden>
+              <label for="curvature-min-size">Minimum target <span class="number-with-unit"><input id="curvature-min-size" type="number" min="10" step="1" value="465"><span>mm</span></span></label>
+              <label for="curvature-max-size">Maximum target <span class="number-with-unit"><input id="curvature-max-size" type="number" min="10" step="1" value="620"><span>mm</span></span></label>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Variable cell size <button class="info-button" type="button" popovertarget="curvature-info" aria-label="About curvature-based cell sizes"><svg><use href="#i-info"></use></svg></button></div>
+        </div>
         <div id="pattern-angle-control" class="ribbon-group" hidden="">
           <div class="ribbon-group-content">
             <div class="ribbon-field pattern-angle-field">
@@ -329,6 +339,14 @@
       <span id="ribbon-selection-context" class="selection-context">No selection</span>
     </div>
 
+    <div id="curvature-info" class="format-info" popover role="note" aria-labelledby="curvature-info-title">
+      <button class="info-close" type="button" popovertarget="curvature-info" popovertargetaction="hide" aria-label="Close curvature sizing information">×</button>
+      <h2 id="curvature-info-title">Smaller cells at sharper bends</h2>
+      <p>Adapt to curvature places more cell centres where the shell bends more sharply, with gradual transitions towards larger cells in flatter areas. Regularized surface keeps these size differences while improving the arrangement.</p>
+      <p>Minimum and maximum are target distances between cell centres, not strict limits on each panel's dimensions. Openings, borders and later manual edits affect the actual shapes. Fitting and stock checks still apply.</p>
+      <p>Choose <strong>New arrangement</strong> to apply the range. This replaces the current layout; Undo restores it. Opening a saved project or changing stock settings keeps its accepted layout.</p>
+      <p>If the range needs more than 240 cells, increase the target sizes. Sharp creases and noisy meshes still need review.</p>
+    </div>
     <div id="import-info" class="format-info" popover role="note" aria-labelledby="import-info-title">
       <button class="info-close" type="button" popovertarget="import-info" popovertargetaction="hide" aria-label="Close import information">×</button>
       <h2 id="import-info-title">What can I import?</h2>

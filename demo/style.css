@@ -349,6 +349,11 @@ body:not(:has(#split-cell[aria-pressed="true"])) .split-help { display: none; }
 .project-bar > span { flex:1; min-width:220px; }
 .project-bar .button { padding:5px 10px; font-size:12px; }
 .project-bar .checkbox-row { margin:0; flex:none; }
+.curvature-sizing-fields { flex-direction:column; align-items:flex-start; justify-content:center; gap:0; }
+.curvature-sizing-fields .checkbox-row { margin:0; }
+#curvature-range:not([hidden]) { display:flex; gap:12px; }
+#curvature-range label { display:flex; flex-direction:column; gap:0; font-size:11px; line-height:13px; }
+#curvature-range input { width:75px; height:22px; min-height:22px; padding:1px 4px; font-size:11px; }
 #local-save-note { flex-basis:100%; margin:0; }
 #local-save-note.is-error { color:#9d462b; }
 .recovery-dialog { width:min(760px, calc(100vw - 32px)); max-height:85vh; border:1px solid #9eabba; border-radius:8px; padding:24px; color:#263545; }

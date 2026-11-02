@@ -212,6 +212,11 @@ function safeSettings(settings) {
     result.pattern = { type: settings.pattern.type };
     for (const key of ['angle', 'frequency', 'regularity']) if (Number.isFinite(settings.pattern[key])) result.pattern[key] = settings.pattern[key];
   }
+  const policy = settings?.generatorPolicy;
+  if (policy?.type === 'curvature' && policy.version === 1 && Number.isFinite(policy.minSizeMm) &&
+      Number.isFinite(policy.maxSizeMm) && policy.minSizeMm >= 10 && policy.maxSizeMm >= policy.minSizeMm) {
+    result.generatorPolicy = { type: 'curvature', version: 1, minSizeMm: policy.minSizeMm, maxSizeMm: policy.maxSizeMm };
+  }
   return result;
 }
 
