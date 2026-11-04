@@ -9,6 +9,7 @@
  */
 
 import { buildCurvatureSizing, sampleAdaptiveSeeds } from './curvature-sizing.js';
+import { readMaxGeneratedCells } from './generator-policy.js';
 
 const cache = new WeakMap();
 const WELD = 1e-5;
@@ -123,10 +124,11 @@ function surfaceSample(p, random) {
 }
 
 /** targetSize is the approximate distance between neighbouring cell centres. */
-export function generateSeeds(model, targetSize = 600, variation = 0.35, seed = 1) {
+export function generateSeeds(model, targetSize = 600, variation = 0.35, seed = 1, maxGeneratedCells) {
+  const limit = readMaxGeneratedCells(maxGeneratedCells);
   const p = prepare(model);
   const size = Math.max(10, Number(targetSize) || 600);
-  const count = Math.max(12, Math.min(240, Math.round(p.area / (Math.sqrt(3) * 0.5 * size * size))));
+  const count = Math.max(12, Math.min(limit, Math.round(p.area / (Math.sqrt(3) * 0.5 * size * size))));
   const random = randomGenerator(seed);
   const poolSize = Math.min(9000, Math.max(1500, count * 35));
   const candidates = Array.from({ length: poolSize }, () => surfaceSample(p, random));
@@ -148,8 +150,8 @@ export function generateSeeds(model, targetSize = 600, variation = 0.35, seed = 
 }
 
 /** Optional curvature-aware generator; the existing uniform generator is unchanged. */
-export function generateAdaptiveSeeds(model, policy, variation = .3, seed = 7) {
-  const prepared = prepare(model), sizing = buildCurvatureSizing(prepared, policy);
+export function generateAdaptiveSeeds(model, policy, variation = .3, seed = 7, maxGeneratedCells) {
+  const prepared = prepare(model), sizing = buildCurvatureSizing(prepared, policy, maxGeneratedCells);
   return { seeds: sampleAdaptiveSeeds(prepared, sizing, variation, randomGenerator(seed)), sizing };
 }
 

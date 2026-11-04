@@ -63,7 +63,11 @@ The range and accepted source are saved with the study. Existing projects keep
 their layouts when opened or when stock settings change.
 
 These are spacing targets, not hard panel dimensions or a guarantee of better
-fitting. Requests above 240 cells are rejected with an explanation. See the
+fitting. **Maximum generated cells** sets the Organic/Regularized generation
+limit: 240 by default, adjustable from 12 to 500. Apply it with **New arrangement**;
+larger counts take longer, and adaptive requests exceeding the chosen limit are explained
+without replacing the accepted layout. The separate 500-cell editing limit
+also covers divided cells and structured patterns. See the
 [curvature sizing guide](docs/curvature-sizing.md) for the method and limits.
 
 ## Saved projects, recovery and feedback
@@ -139,6 +143,10 @@ its first argument and `PANEL_EXPECTED_BUILD` to verify a particular release.
 `scripts/check-curvature-browser.cjs` exercises adaptive Regularized generation,
 staged controls, history, saved projects, local resume and rejected ranges on a
 public synthetic shell with flat and curved regions.
+
+`scripts/check-generation-budget-browser.cjs` verifies a Regularized arrangement
+above 240 cells, draft limits, history, study downloads, checkpoint restoration
+and the controls at 1024 pixels. It accepts a site URL and `PANEL_EXPECTED_BUILD`.
 
 This repository is self-contained: app source is in demo/, serving code in server.mjs, synthetic tests alongside the app, and packaging tools in scripts/. GitHub Actions runs the tests and publishes only the reviewed static app from dist/panel-workbench-pages/ to Pages on each main-branch push. Configure Settings > Pages > Source as GitHub Actions.
 

@@ -31,12 +31,28 @@ heuristic, not a certified bound on the angle within a finished panel or on the
 distance between a panel and the source shell. Reducing the minimum only has an
 effect where the estimated bend calls for smaller cells.
 
-A proposed arrangement requiring more than 240 centres is rejected explicitly.
-Increase the size range or simplify the task; the generator must not silently
-discard cells or pretend that a capped count still meets the requested spacing.
-Other mesh-work limits can also reject a costly generation request. The current
-accepted layout remains the basis for editing and saving until a replacement is
-accepted.
+### Choose a generation limit
+
+**Maximum generated cells** controls the limit for a new Organic or Regularized
+arrangement, with uniform or curvature-based spacing. The default is **240**;
+choose a whole number from **12 to 500**, then use **New arrangement** to apply it
+with the other layout settings. Changing the number alone keeps the current
+layout intact. Raising the limit allows more cells when the chosen spacing calls
+for them; it does not require the generator to use that many cells.
+
+A curvature-based request exceeding the chosen maximum is rejected explicitly.
+Increase the target spacing or raise the maximum; the generator must not silently
+discard adaptive cells or pretend that a capped count still meets the requested
+spacing. Uniform generation uses the maximum as its count cap. Larger counts and
+more detailed source meshes take longer, and other calculation limits can still
+reject a costly request. The accepted layout remains available until a
+replacement is accepted.
+
+This is a generation preference. The separate **500-cell editing limit** also
+covers later divisions and structured patterns. Lowering the generation setting
+does not remove cells from an already accepted layout. Hexagonal and Geodesic
+patterns use their own spacing or subdivision controls and retain their separate
+500-cell limit.
 
 ## Why relaxation uses a different density from initial sampling
 
@@ -101,6 +117,13 @@ regenerate a different partition. The study-v6 required-feature mechanism must
 reject unsupported adaptive projects instead of silently treating them as
 uniform projects. The durable v6 baseline remains supported.
 
+The applied generation maximum is saved with the design. Opening a study, Undo,
+Redo and checkpoint restoration bring it back with the corresponding layout;
+an uncommitted value in the Layout controls is only a draft. Older studies use
+the default of 240. Studies with a different maximum declare the
+`generation-budget-v1` feature, so an older reader stops instead of silently
+discarding that setting. Opening a new source model resets the maximum to 240.
+
 Smaller cells can reduce how much curvature each part spans, but there is no
 promise that every resulting polygon can be fitted as a valid planar panel, or
 that every mitre, roundover or carved part is feasible. Inspect source-to-panel
@@ -128,3 +151,11 @@ the browser test measured median bend-cell area at 22.8% of the flat-region
 median, with complete source coverage and all 60 flat/solid panels resolved.
 These checks do not establish physical fabrication accuracy or a fit improvement
 for every shell.
+
+The adjustable-maximum browser regression uses a public 1.2 × 1.2 m gridded
+sheet. With 76 mm target spacing and a maximum of 300, Regularized generated
+288 panels with complete source coverage and all flat/solid checks passing.
+The check also verifies draft controls, invalid values, Undo, study download and
+reopening, checkpoint restoration and a new source returning to the default.
+This is a reproducible limit test; complex curved shells still need their own
+geometry and performance review.

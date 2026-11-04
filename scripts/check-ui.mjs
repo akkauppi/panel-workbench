@@ -550,7 +550,7 @@ function surfaceShape(cell) {
 }
 function currentDesign() {
   return structuredClone({ layout: state.layout, directBase: state.directBase, pattern: state.pattern, seeds: state.seeds, mergeGroups: state.mergeGroups, cornerEdits: state.cornerEdits, size: state.size, variation: state.variation,
-    randomSeed: state.randomSeed, thickness: state.thickness, straightness: state.straightness,
+    randomSeed: state.randomSeed, maxGeneratedCells: state.maxGeneratedCells, thickness: state.thickness, straightness: state.straightness,
     roundover: state.roundover, carve: state.carve, minimumThickness: state.minimumThickness, flipOutside: state.flipOutside });
 }
 function close(actual, expected, label, tolerance = 1e-5) {
@@ -1723,6 +1723,49 @@ await edit(() => clickControl('regenerate'), 'repeat the accepted regularized ar
 assert.deepEqual(currentDesign(), regularized70Design);
 assert.equal(state.history.length, regularizedRepeatHistory, 'an identical surface is not an additional history edit');
 console.log('PASS regularized vessel drafts, applied strength, deterministic generation and organic/regularized history');
+
+const defaultBudgetStudy = await saveStudy(), beforeBudgetDraft = preservedDocument();
+assert.equal(state.maxGeneratedCells, 240); assert.equal($('max-generated-cells').value, '240');
+assert.equal($('generation-budget-control').hidden, false);
+input('max-generated-cells', 300);
+assert.deepEqual(preservedDocument(), beforeBudgetDraft, 'the generation maximum remains a draft until New arrangement');
+assert.match($('generation-help').textContent, /More cells take longer/);
+await edit(() => clickControl('regenerate'), 'apply a custom generation maximum to Regularized surface');
+assert.equal(state.maxGeneratedCells, 300); assert.equal(state.layout.recipe.maxGeneratedCells, 300);
+const budget300Design = currentDesign(), budget300Study = await saveStudy();
+assert.equal(budget300Study.maxGeneratedCells, 300); assert.ok(budget300Study.requiredFeatures.includes('generation-budget-v1'));
+await edit(() => clickControl('undo-move'), 'undo the custom generation maximum');
+assert.deepEqual(currentDesign(), regularized70Design); assert.equal($('max-generated-cells').value, '240');
+await edit(() => clickControl('redo-edit'), 'redo the custom generation maximum');
+assert.deepEqual(currentDesign(), budget300Design); assert.equal($('max-generated-cells').value, '300');
+await openStudy(budget300Study, 'reopen the custom generation maximum');
+assert.deepEqual(currentDesign(), budget300Design); assert.equal($('max-generated-cells').value, '300');
+clickControl('open-checkpoints'); input('checkpoint-name', 'Generation maximum 300'); clickControl('save-checkpoint');
+const budgetCheckpoint = state.checkpoints.at(-1); clickControl('close-checkpoints');
+input('max-generated-cells', 320);
+await edit(() => clickControl('regenerate'), 'change the applied generation maximum after a checkpoint');
+clickControl('open-checkpoints');
+const budgetCheckpointRow = $('checkpoint-list').querySelector(`[data-checkpoint-id="${budgetCheckpoint.id}"]`);
+[...budgetCheckpointRow.querySelectorAll('button')].find(button => button.textContent === 'Restore').click();
+await until(() => state.maxGeneratedCells === 300 && state.solved && !state.busy && !state.pending, 'checkpoint restores the applied generation maximum');
+assert.equal($('max-generated-cells').value, '300'); assert.deepEqual(currentDesign(), budget300Design);
+await edit(() => clickControl('undo-move'), 'undo checkpoint restoration of the generation maximum');
+assert.equal(state.maxGeneratedCells, 320); assert.equal($('max-generated-cells').value, '320');
+for (const invalid of [11, 501, 300.5]) {
+  const before = preservedDocument(); input('max-generated-cells', invalid); clickControl('regenerate');
+  await until(() => /whole number from 12 to 500/.test($('status').textContent), 'invalid generation maximum is explained');
+  assert.deepEqual(preservedDocument(), before, 'invalid generation maximum keeps accepted source and history');
+}
+input('max-generated-cells', 330);
+const beforeBudgetCancellation = preservedDocument(), budgetReply = await holdArrangement('hold generation before a newer cell-limit draft');
+input('max-generated-cells', 350);
+await deliverCancelledArrangement(budgetReply, beforeBudgetCancellation, 'cancel generation superseded by another cell-limit draft');
+assert.equal($('max-generated-cells').value, '350'); assert.equal(state.maxGeneratedCells, 320);
+input('pattern-type', 'hexagonal');
+assert.equal($('generation-budget-control').hidden, true); assert.equal($('max-generated-cells').disabled, true);
+await openStudy(defaultBudgetStudy, 'restore the default generation maximum');
+assert.deepEqual(currentDesign(), regularized70Design); assert.equal($('max-generated-cells').value, '240');
+console.log('PASS generation maximum drafts, validation, apply, undo/redo, study/checkpoint restoration and stale-generation cancellation');
 
 const uniformRegularizedStudy = await saveStudy(), beforeSizingDraft = preservedDocument();
 clickControl('curvature-sizing');

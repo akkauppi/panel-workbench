@@ -155,6 +155,15 @@
           </div>
           <div class="ribbon-group-caption">Variable cell size <button class="info-button" type="button" popovertarget="curvature-info" aria-label="About curvature-based cell sizes"><svg><use href="#i-info"></use></svg></button></div>
         </div>
+        <div id="generation-budget-control" class="ribbon-group">
+          <div class="ribbon-group-content">
+            <div class="ribbon-field">
+              <label for="max-generated-cells">Maximum generated cells</label>
+              <span class="number-with-unit"><input id="max-generated-cells" type="number" min="12" max="500" step="1" value="240" aria-describedby="generation-help"><span>cells</span></span>
+            </div>
+          </div>
+          <div class="ribbon-group-caption">Generation limit <button class="info-button" type="button" popovertarget="generation-budget-info" aria-label="About the generated cell limit"><svg><use href="#i-info"></use></svg></button></div>
+        </div>
         <div id="pattern-angle-control" class="ribbon-group" hidden="">
           <div class="ribbon-group-content">
             <div class="ribbon-field pattern-angle-field">
@@ -365,7 +374,15 @@
       <p>Adapt to curvature places more cell centres where the shell bends more sharply, with gradual transitions towards larger cells in flatter areas. Regularized surface keeps these size differences while improving the arrangement.</p>
       <p>Minimum and maximum are target distances between cell centres, not strict limits on each panel's dimensions. Openings, borders and later manual edits affect the actual shapes. Fitting and stock checks still apply.</p>
       <p>Choose <strong>New arrangement</strong> to apply the range. This replaces the current layout; Undo restores it. Opening a saved project or changing stock settings keeps its accepted layout.</p>
-      <p>If the range needs more than 240 cells, increase the target sizes. Sharp creases and noisy meshes still need review.</p>
+      <p>If the range needs more cells than the chosen maximum, increase the target sizes or raise <strong>Maximum generated cells</strong>. The default is 240; you can choose 12–500. Larger counts take longer. Sharp creases and noisy meshes still need review.</p>
+    </div>
+    <div id="generation-budget-info" class="format-info" popover role="note" aria-labelledby="generation-budget-info-title">
+      <button class="info-close" type="button" popovertarget="generation-budget-info" popovertargetaction="hide" aria-label="Close generated cell limit information">×</button>
+      <h2 id="generation-budget-info-title">Choose a limit for a new arrangement</h2>
+      <p><strong>Maximum generated cells</strong> sets the limit for a new Organic or Regularized surface arrangement. Choose a whole number from 12 to 500; the default is 240. Cell spacing and the source surface still determine the requested count.</p>
+      <p>Choose <strong>New arrangement</strong> to apply this setting together with the layout controls. Existing cells stay unchanged while you adjust the number. Undo and named checkpoints restore the applied setting with the layout.</p>
+      <p>More cells and more detailed source meshes take longer to calculate. Raising this limit allows a larger request but does not guarantee that every mesh or panel will resolve; other calculation limits still apply.</p>
+      <p>The separate 500-cell editing limit also covers cells added by division and structured patterns. Lowering this generation setting does not remove cells from an accepted study.</p>
     </div>
     <div id="reset-info" class="format-info" popover role="note" aria-labelledby="reset-info-title">
       <button class="info-close" type="button" popovertarget="reset-info" popovertargetaction="hide" aria-label="Close reset information">×</button>

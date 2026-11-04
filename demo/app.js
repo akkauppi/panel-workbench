@@ -13,7 +13,7 @@ import { summarizeCalculation, compareCalculations, createDiagnosticReport } fro
 import { initProjectUI } from './project-ui.js';
 import { computeExplodedOffsets } from './explode.js';
 import { assemblyGuideCorners } from './assembly-guides.js';
-import { readGeneratorPolicy } from './generator-policy.js';
+import { readGeneratorPolicy, readMaxGeneratedCells, DEFAULT_MAX_GENERATED_CELLS, MIN_GENERATED_CELLS, MAX_GENERATED_CELLS } from './generator-policy.js';
 import { readPanelOffsets, reconcilePanelOffsets } from './panel-offsets.js';
 import { describePanelProblems } from './panel-diagnostics.js';
 import { inspectPanelJoint } from './joint-inspection.js';
@@ -36,7 +36,7 @@ const state = {
   name: 'Synthetic example', view: 'surface', color: 'timber', selected: null, selectedIds: [], multiSelect: false, mergeGroups: [],
   cornerEdits: [], cornerMode: false, splitMode: false, offsetMode: false, panelOffsets: [], nextCellId: 0, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
   size: Number($('size').value), variation: Number($('variation').value) / 100,
-  pattern: readPattern(), generatorPolicy: null, generating: false,
+  pattern: readPattern(), generatorPolicy: null, maxGeneratedCells: DEFAULT_MAX_GENERATED_CELLS, generating: false,
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
   straightness: 0.7, thickness: 40, roundover: 2, carve: false, minimumThickness: 12, flipOutside: false,
   project: null, lastCalculation: undefined, openedCalculation: null, comparison: null, latestAcceptedEdit: null, latestRejection: null,
@@ -248,7 +248,7 @@ function requestLayout({ fresh = false, newModel = false, preserveSource = false
   buildFittingOverlay();
   $('calculation-comparison').textContent = 'Fitting panels… Accepted source edits can be saved while fitting.';
   state.pending = { id: state.requested, model: newModel ? state.model : undefined,
-    size: state.size, variation: state.variation, randomSeed: state.randomSeed, pattern: state.pattern, generatorPolicy: state.generatorPolicy,
+    size: state.size, variation: state.variation, randomSeed: state.randomSeed, pattern: state.pattern, generatorPolicy: state.generatorPolicy, maxGeneratedCells: state.maxGeneratedCells,
     straightness: state.straightness, thickness: state.thickness, roundover: state.roundover,
     carve: state.carve, minimumThickness: state.minimumThickness, flipOutside: state.flipOutside,
     panelOffsets: structuredClone(state.panelOffsets),
@@ -728,6 +728,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
     state.projectLimits = readProjectLimits(); state.protectedCellIds = [];
     state.panelOffsets = [];
     state.generatorPolicy = null;
+    state.maxGeneratedCells = DEFAULT_MAX_GENERATED_CELLS;
     state.pattern = readPattern(pattern);
     const ideal = initialSize ?? Math.sqrt(state.analysis.area / 130 / 0.866);
     const step = initialSize === null ? Math.max(1, Math.round(ideal / 50)) : 1;
@@ -1312,6 +1313,7 @@ function syncDesignControls() {
   $('curvature-sizing').checked = !!state.generatorPolicy;
   $('curvature-min-size').value = state.generatorPolicy?.minSizeMm ?? Math.max(10, Math.round(state.size * .75));
   $('curvature-max-size').value = state.generatorPolicy?.maxSizeMm ?? state.size;
+  $('max-generated-cells').value = readMaxGeneratedCells(state.maxGeneratedCells);
   $('carve-inner').checked = state.carve;
   $('flip-outside').checked = state.flipOutside;
   if (state.pattern.type !== 'organic' && state.edit) {
@@ -1333,14 +1335,19 @@ function updatePatternControls() {
   $('size-control').hidden = type === 'geodesic' || adaptive;
   $('size').disabled = type === 'geodesic' || adaptive;
   $('curvature-sizing-control').hidden = !supportsSizing;
+  $('generation-budget-control').hidden = !supportsSizing;
+  $('max-generated-cells').disabled = !supportsSizing;
   $('curvature-range').hidden = !adaptive;
   $('variation').disabled = type !== 'organic';
   $('pattern-help').textContent = type === 'hexagonal' ? 'Flat surfaces; edges and openings clip the lattice.'
     : type === 'geodesic' ? 'Spherical surfaces; boundary cells are clipped.'
     : type === 'regularized' ? adaptive ? 'Regularized cells keep local size differences.' : 'Surface relaxation towards more even cells.' : 'Randomized surface layout.';
   $('size-help').hidden = !supportsSizing;
-  $('size-help').textContent = adaptive ? 'Smaller cells at bends; up to 240.' : 'Cell size sets approximate centre spacing.';
-  $('generation-help').textContent = 'Replaces edits. Undo restores them.';
+  const budget = Number($('max-generated-cells').value);
+  const validBudget = Number.isSafeInteger(budget) && budget >= MIN_GENERATED_CELLS && budget <= MAX_GENERATED_CELLS;
+  $('size-help').textContent = adaptive && validBudget ? `Smaller cells at bends; maximum ${budget}.` : 'Cell size sets approximate centre spacing.';
+  $('generation-help').textContent = supportsSizing && !validBudget ? `Choose a whole-number limit from ${MIN_GENERATED_CELLS} to ${MAX_GENERATED_CELLS}.`
+    : supportsSizing && budget > DEFAULT_MAX_GENERATED_CELLS ? 'More cells take longer. Undo restores edits.' : 'Replaces edits. Undo restores them.';
 }
 function restoreSnapshot(entry) {
   setOffsetNotice('');
@@ -1910,6 +1917,8 @@ async function freshLayout({ applySettings = false } = {}) {
       candidate.size = Number($('size').value); candidate.variation = Number($('variation').value) / 100;
       candidate.generatorPolicy = readGeneratorPolicy(['organic', 'regularized'].includes(candidate.pattern.type) && $('curvature-sizing').checked
         ? { type: 'curvature', version: 1, minSizeMm: Number($('curvature-min-size').value), maxSizeMm: Number($('curvature-max-size').value) } : null, candidate.pattern);
+      candidate.maxGeneratedCells = ['organic', 'regularized'].includes(candidate.pattern.type)
+        ? readMaxGeneratedCells(Number($('max-generated-cells').value)) : DEFAULT_MAX_GENERATED_CELLS;
       if (candidate.generatorPolicy) candidate.size = candidate.generatorPolicy.maxSizeMm;
       if (candidate.pattern.type === 'organic') candidate.randomSeed++;
     }
@@ -1963,7 +1972,7 @@ $('cell-weight').addEventListener('input', () => {
   $('cell-weight-value').textContent = `${Math.round(seed.weight * 100)}%`;
 });
 $('cell-weight').addEventListener('change', finishPendingEdit);
-for (const id of ['size', 'variation', 'pattern-type', 'pattern-angle', 'pattern-frequency', 'pattern-regularity', 'curvature-sizing', 'curvature-min-size', 'curvature-max-size']) $(id).addEventListener('input', () => {
+for (const id of ['size', 'variation', 'pattern-type', 'pattern-angle', 'pattern-frequency', 'pattern-regularity', 'curvature-sizing', 'curvature-min-size', 'curvature-max-size', 'max-generated-cells']) $(id).addEventListener('input', () => {
   cancelGeneration();
   updatePatternControls(); updateControlLabels();
   setStatus('Layout settings are ready. Choose New arrangement to replace the layout; Undo restores your edits.');
@@ -2197,7 +2206,7 @@ function validateStudyGeometry(study) {
   const factor = { mm: 1, cm: 10, m: 1000 }[study.units];
   return validateDesignGeometry({
     model: { vertices: study.rawModel.vertices.map(point => point.map(value => value * factor)), triangles: study.rawModel.triangles },
-    seeds: study.seeds, size: study.size, pattern: study.pattern, generatorPolicy: study.generatorPolicy, panelOffsets: study.panelOffsets, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
+    seeds: study.seeds, size: study.size, pattern: study.pattern, generatorPolicy: study.generatorPolicy, maxGeneratedCells: study.maxGeneratedCells, panelOffsets: study.panelOffsets, mergeGroups: study.mergeGroups, cornerEdits: study.cornerEdits, layout: study.layout, directBase: study.directBase });
 }
 async function openStudyDocument(study, { recovered = false, checkpoint = true, activeAt, automatic = false } = {}) {
   const opening = ++studyOpenRevision;

@@ -1,6 +1,7 @@
 import { readPanelOffsets } from './panel-offsets.js';
 import { readProjectLimits, hasProjectLimits } from './project-limits.js';
 import { readProtectedCellIds } from './edit-locks.js';
+import { readMaxGeneratedCells, DEFAULT_MAX_GENERATED_CELLS } from './generator-policy.js';
 
 // Bounded, geometry-free calculation evidence. Fingerprints detect changes;
 // they are not cryptographic identities or a substitute for geometric checks.
@@ -206,6 +207,10 @@ function eventSummary(event) {
 
 function safeSettings(settings) {
   const result = {};
+  try {
+    const maxGeneratedCells = readMaxGeneratedCells(settings?.maxGeneratedCells);
+    if (maxGeneratedCells !== DEFAULT_MAX_GENERATED_CELLS) result.maxGeneratedCells = maxGeneratedCells;
+  } catch { /* Keep malformed settings out of feedback and handoff manifests. */ }
   for (const key of ['size', 'variation', 'randomSeed', 'straightness', 'thickness', 'roundover', 'minimumThickness']) {
     if (Number.isFinite(settings?.[key])) result[key] = settings[key];
   }

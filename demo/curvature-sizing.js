@@ -1,4 +1,4 @@
-import { readGeneratorPolicy } from './generator-policy.js';
+import { readGeneratorPolicy, readMaxGeneratedCells, MAX_GENERATED_CELLS } from './generator-policy.js';
 
 /** Version 1 uses a 20 degree normal-turn target, not a fabrication tolerance.
  * Curvature is a robust quadratic fit to a physical neighbourhood on the source
@@ -111,7 +111,8 @@ function localCurvature(points, members, areas, origin, radius) {
   return { curvature, uncertain: false };
 }
 
-export function buildCurvatureSizing(prepared, input) {
+export function buildCurvatureSizing(prepared, input, maxGeneratedCells) {
+  const limit = readMaxGeneratedCells(maxGeneratedCells);
   const policy = readGeneratorPolicy(input);
   if (!policy) throw new Error('Curvature sizing needs a minimum and maximum cell size.');
   const {minSizeMm:minSize,maxSizeMm:maxSize} = policy, {graph,graphPoints:points,triangles} = prepared;
@@ -169,7 +170,7 @@ export function buildCurvatureSizing(prepared, input) {
     components.push(nodes);
   }
   const requestedCount = Math.max(12,components.length,Math.round(requested));
-  if (requestedCount > 240) throw new Error(`Curvature sizing requests ${requestedCount} cells, above the 240-cell limit. Increase the minimum/maximum cell sizes or use a smaller source region.`);
+  if (requestedCount > limit) throw new Error(`Curvature sizing requests ${requestedCount} cells, above the selected ${limit}-cell limit. Increase ${limit < MAX_GENERATED_CELLS ? `Maximum generated cells (up to ${MAX_GENERATED_CELLS}), increase ` : ''}the minimum/maximum cell sizes or use a smaller source region.`);
   return { policy, vertexSizes, componentIds, components,
     targetAtTriangle:index => triangleSizes[index], triangleDensity:index => triangleDensities[index],
     diagnostics:{ minTargetSize,maxTargetSize,requestedCount,count:requestedCount,probeCount,uncertainProbeCount,neighbourVisits:visits,supportRadius,componentCount:components.length },

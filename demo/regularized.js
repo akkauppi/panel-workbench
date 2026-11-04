@@ -201,8 +201,8 @@ export function generateRegularizedLayout(model, input, options = {}) {
   if (options.cornerEdits?.length) throw new Error('Use direct corner editing for a regularized layout.');
   // Keep the initial sampler identical to the ordinary .3-variation baseline;
   // the Regularity control affects relaxation rather than a second jitter knob.
-  const adaptive = policy ? generateAdaptiveSeeds(model, policy, .3, options.randomSeed ?? 7) : null;
-  let seeds = adaptive?.seeds ?? generateSeeds(model, size, .3, options.randomSeed ?? 7);
+  const adaptive = policy ? generateAdaptiveSeeds(model, policy, .3, options.randomSeed ?? 7, options.maxGeneratedCells) : null;
+  let seeds = adaptive?.seeds ?? generateSeeds(model, size, .3, options.randomSeed ?? 7, options.maxGeneratedCells);
   if (analyzeModel(model).triangleCount * seeds.length * 9 > 12_000_000) throw new Error('The source is too detailed for the regularization work budget. Simplify its mesh or use larger cells.');
   const components = sourceComponents(model, seeds), initial = new Map(seeds.map(seed => [seed.id, [...seed.position]]));
   const baseline = generateCellLayout(model, seeds, { size });

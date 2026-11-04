@@ -1,6 +1,6 @@
 import { readLayout, layoutRecipe, nextLayoutCellId } from './layout.js';
 import { readPattern } from './pattern.js';
-import { readGeneratorPolicy } from './generator-policy.js';
+import { readGeneratorPolicy, readMaxGeneratedCells, DEFAULT_MAX_GENERATED_CELLS } from './generator-policy.js';
 import { readPanelOffsets } from './panel-offsets.js';
 import { readProjectLimits, hasProjectLimits } from './project-limits.js';
 import { readProtectedCellIds } from './edit-locks.js';
@@ -44,6 +44,8 @@ export function captureDesign(state) {
   // History uses explicit null so Object.assign can turn an earlier adaptive
   // policy off. The transport reader below omits null for legacy byte stability.
   result.generatorPolicy = readGeneratorPolicy(state.generatorPolicy, result.pattern);
+  // Explicit in history so Undo resets the limit; default omitted on transport.
+  result.maxGeneratedCells = readMaxGeneratedCells(state.maxGeneratedCells);
   // Explicit empty arrays let Undo clear offsets; transport omits empty values
   // so all earlier no-offset studies retain their exact serialized fields.
   result.panelOffsets = readPanelOffsets(state.panelOffsets);
@@ -170,6 +172,8 @@ export function readStudy(input) {
   const randomSeed = study.randomSeed === undefined ? 1 : study.randomSeed;
   if (!isId(randomSeed)) throw new Error('The study contains an invalid arrangement seed.');
   const pattern = readPattern(study.pattern), generatorPolicy = readGeneratorPolicy(study.generatorPolicy, pattern);
+  const maxGeneratedCells = readMaxGeneratedCells(study.maxGeneratedCells);
+  if (maxGeneratedCells !== DEFAULT_MAX_GENERATED_CELLS && study.version < 6) throw new Error('A custom generation budget requires study file version 6 and its required-feature declaration. Keep the original file unchanged.');
   if (generatorPolicy && study.version < 6) throw new Error('Curvature sizing requires study file version 6 and its required-feature declaration. Keep the original file unchanged.');
   const panelOffsets = readPanelOffsets(study.panelOffsets);
   if (panelOffsets.length && study.version < 6) throw new Error('Panel offsets require study file version 6 and their required-feature declaration. Keep the original file unchanged.');
@@ -185,6 +189,7 @@ export function readStudy(input) {
     rawModel: readModel(study.rawModel, study.units), units: study.units, up: study.up,
     seeds, mergeGroups, cornerEdits, pattern,
     ...(generatorPolicy ? { generatorPolicy } : {}),
+    ...(maxGeneratedCells !== DEFAULT_MAX_GENERATED_CELLS ? { maxGeneratedCells } : {}),
     ...(panelOffsets.length ? { panelOffsets } : {}),
     ...(hasProjectLimits(projectLimits) ? { projectLimits } : {}),
     ...(protectedCellIds.length ? { protectedCellIds } : {}),

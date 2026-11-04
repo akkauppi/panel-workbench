@@ -1,4 +1,18 @@
 export const CURVATURE_SIZING_FEATURE = 'curvature-sizing-v1';
+export const GENERATION_BUDGET_FEATURE = 'generation-budget-v1';
+export const DEFAULT_MAX_GENERATED_CELLS = 240;
+export const MIN_GENERATED_CELLS = 12;
+export const MAX_GENERATED_CELLS = 500;
+
+/** A preference for new Organic/Regularized arrangements, not a restriction
+ * on an accepted source layout or a promise that detailed meshes will finish. */
+export function readMaxGeneratedCells(input) {
+  if (input === undefined || input === null) return DEFAULT_MAX_GENERATED_CELLS;
+  if (!Number.isSafeInteger(input) || input < MIN_GENERATED_CELLS || input > MAX_GENERATED_CELLS) {
+    throw new Error(`Set the maximum generated cells to a whole number from ${MIN_GENERATED_CELLS} to ${MAX_GENERATED_CELLS}.`);
+  }
+  return input;
+}
 
 /** Optional source-generation policy. Sizes are target centre spacings in mm,
  * independent of the source file's units. Null means the existing uniform
