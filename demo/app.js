@@ -5,7 +5,7 @@ import { analyzeModel, createMergeGroups } from './geometry.js';
 import { exportSolidsOBJ, exportSolidsSTL } from './solids.js';
 import { captureDesign, createStudy, readStudy, serializeStudy, immutableLayout } from './study.js';
 import { cornerDisplayPosition, cornerProjectionPatch, projectCornerDisplacement } from './corner-drag.js';
-import { previewCornerMove, createCornerSketch, layoutCellHandle, previewCellSplit } from './layout-edit.js';
+import { previewCornerMove, createCornerSketch, layoutCellHandle, previewCellSplit, enumerateBendSeams } from './layout-edit.js';
 import { initLaserUI } from './laser-ui.js';
 import { nextLayoutCellId, layoutRecipe } from './layout.js';
 import { createProjectMetadata, advanceProjectRevision, assertStudySize } from './project-document.js';
@@ -35,6 +35,7 @@ const state = {
   rawModel: null, model: null, analysis: null, seeds: [], cells: [], result: null, layout: null, sourceSurface: null,
   name: 'Synthetic example', view: 'surface', color: 'timber', selected: null, selectedIds: [], multiSelect: false, mergeGroups: [],
   cornerEdits: [], cornerMode: false, splitMode: false, offsetMode: false, panelOffsets: [], nextCellId: 0, selectedCorner: null, directBase: null, allowCellRemoval: true, lastLayoutChange: null,
+  acrossBendMode: false, acrossBendSelection: null, acrossBendPreview: null, acrossBendPreviewBusy: false,
   size: Number($('size').value), variation: Number($('variation').value) / 100,
   pattern: readPattern(), generatorPolicy: null, maxGeneratedCells: DEFAULT_MAX_GENERATED_CELLS, generating: false,
   randomSeed: 7, edit: true, explode: 0, history: [], future: [], ready: false,
@@ -76,6 +77,7 @@ const junctionGroup = new THREE.Group(), cornerGroup = new THREE.Group(), corner
 const cornerSketchGroup = new THREE.Group(), fittingGroup = new THREE.Group(), assemblyGuideGroup = new THREE.Group();
 scene.add(cellGroup, seedGroup, referenceGroup, junctionGroup, cornerGroup, cornerGuide, cornerSketchGroup, fittingGroup, assemblyGuideGroup);
 const offsetGroup = new THREE.Group(); scene.add(offsetGroup);
+const acrossBendGroup = new THREE.Group(); scene.add(acrossBendGroup);
 const inspectionGroup = new THREE.Group(), comparisonGroup = new THREE.Group(); scene.add(inspectionGroup, comparisonGroup);
 let sourceMesh, grid, seedGeometry, seedMaterial;
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
@@ -87,6 +89,8 @@ let rhinoSequence = 0, exportingRhino = false;
 let diagnosticResult = null, diagnosticWaiting = null, projectUI, restoringStudy = false, startupRestoreOpening = null;
 let workflowBusy = false, comparisonSequence = 0, comparisonWorker = null, limitReport = null, limitReportKey = null, feedbackCapture = null;
 let sectionNormal = new THREE.Vector3(0, 0, 1), sectionFlipped = false;
+let acrossBendSequence = 0, acrossBendTimer = null, acrossBendFitWorker = null, acrossBendValidationWorker = null, acrossBendValidationReject = null, acrossBendHover = null;
+const acrossBendSeamCache = new WeakMap();
 function rhinoOperation(inputs) {
   if (!rhinoWorker) {
     rhinoWorker = new Worker('./rhino-worker.js', { type: 'module' });
@@ -187,7 +191,7 @@ function updateWorkspaceChrome() {
   $('project-revision').textContent = state.project ? `Revision ${state.project.revision}` : 'New project';
   document.title = `${state.name} — Panel Workbench`;
   $('view-name').textContent = viewNames[state.view];
-  $('active-tool-name').textContent = state.inspection ? 'Inspect joint' : state.view === 'reference' ? 'Inspect source' : state.offsetMode ? 'Offset panel' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
+  $('active-tool-name').textContent = state.inspection ? 'Inspect joint' : state.view === 'reference' ? 'Inspect source' : state.acrossBendMode ? 'Across bend' : state.offsetMode ? 'Offset panel' : state.splitMode ? 'Divide cell' : state.cornerMode ? 'Drag corners' : state.multiSelect ? 'Select cells' : state.edit ? 'Move cells' : 'Inspect cells';
   $('ribbon-selection-context').textContent = state.selectedIds.length > 1 ? `${state.selectedIds.length} cells selected`
     : state.selected != null ? `Cell ${panelId(state.selected)}` : 'No selection';
   for (const button of document.querySelectorAll('[data-browser-view]')) {
@@ -237,6 +241,7 @@ function setBusy(busy) {
 }
 function requestLayout({ fresh = false, newModel = false, preserveSource = false } = {}) {
   if (!state.model) return;
+  leaveAcrossBend();
   cancelCornerDrag();
   cancelCornerPending();
   if (fresh) { state.panelOffsets = []; state.seeds = []; state.mergeGroups = []; state.cornerEdits = []; state.layout = null; state.directBase = null; state.lastLayoutChange = null; state.selectedCorner = null; state.selected = null; state.selectedIds = []; }
@@ -327,9 +332,11 @@ worker.onerror = error => {
   showCalculationFailure(`Could not calculate cells: ${error.message}`);
 };
 function showCalculationFailure(message) {
+  const sourceHint = !state.layout && /shared edge incidence|conflicting source outline|source topology conflict/i.test(message)
+    ? ' Some source mesh faces overlap or meet ambiguously. Check or rebuild the mesh in Rhino, then import it again.' : '';
   const explanation = state.layout
     ? 'Panel fitting failed. Save the accepted source and settings, or download a feedback report.'
-    : 'The source opened, but no cell layout could be created. You can open another file or report this issue; the original source file is unchanged.';
+    : `The source opened, but no cell layout could be created.${sourceHint} You can open another file or report this issue; the original source file is unchanged.`;
   $('calculation-comparison').textContent = explanation;
   $('project-limits-note').textContent = 'Project limits are saved, but measurements are unavailable because the panel calculation failed.';
   setStatus(state.layout ? message : `${explanation} Details: ${message}`, true);
@@ -430,9 +437,10 @@ function buildCells() {
       marker.position.fromArray(junction.position); junctionGroup.add(marker);
     }
   }
-  junctionGroup.visible = !state.cornerMode && !state.inspection;
+  junctionGroup.visible = !state.cornerMode && !state.inspection && !state.acrossBendMode;
   updateReference(); buildFittingOverlay(); buildAssemblyGuides(); buildOffsetHandle();
   applyInspectionDisplay(); buildCheckpointComparison();
+  drawAcrossBendPreview();
 }
 function buildAssemblyGuides() {
   disposeGroup(assemblyGuideGroup);
@@ -477,7 +485,7 @@ function buildAssemblyGuides() {
 function buildFittingOverlay() {
   disposeGroup(fittingGroup);
   const available = state.solved && !state.busy && !state.pending && !state.sourceSurface && !drag && !cornerPending;
-  fittingGroup.visible = !state.inspection && $('show-fitting').checked && available && state.view !== 'reference' && state.explode === 0;
+  fittingGroup.visible = !state.inspection && !state.acrossBendMode && $('show-fitting').checked && available && state.view !== 'reference' && state.explode === 0;
   if (!fittingGroup.visible) return;
   const source = [], fitted = [], shifts = [];
   for (const cell of state.cells) {
@@ -526,7 +534,7 @@ function buildSeeds() {
     if (graph) dot.userData.cellHandle = seed;
     seedGroup.add(dot);
   }
-  seedGroup.visible = !state.inspection && $('show-seeds').checked && !state.cornerMode && state.view !== 'reference' && state.explode === 0;
+  seedGroup.visible = !state.inspection && !state.acrossBendMode && $('show-seeds').checked && !state.cornerMode && state.view !== 'reference' && state.explode === 0;
 }
 function buildCorners() {
   disposeGroup(cornerGroup);
@@ -691,6 +699,7 @@ function buildReference() {
   updateReference();
 }
 function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits = [], layout = null, directBase = null, nextCellId = 0, preserveSettings = false, initialSize = null, pattern, projectDocument = null, startup = false, recovered = false, localActivityAt } = {}) {
+  leaveAcrossBend();
   endCheckpointComparison(false); state.inspection = null; clearInspectionDisplay();
   state.checkpoints = structuredClone(projectDocument?.checkpoints || []);
   state.lastHandoff = projectDocument?.lastHandoff;
@@ -739,6 +748,7 @@ function loadModel(rawModel, name, { seeds = null, mergeGroups = [], cornerEdits
     document.querySelectorAll('[data-size]').forEach((button, i) => { button.dataset.size = Math.round(ideal * [0.68, 1, 1.5][i]); });
   }
   $('model-name').textContent = name;
+  $('across-bend-width').value = Math.max(1, Math.round(state.size / 4));
   $('mesh-note').textContent = `${state.model.triangles.length.toLocaleString()} triangles · ${state.analysis.dimensions.map(v => (v / 1000).toFixed(2)).join(' × ')} m`;
   document.querySelector('.app-footer span').textContent = `${name} · All study dimensions in mm`;
   buildReference(); fitView(); updateInspector(); syncDesignControls();
@@ -843,7 +853,8 @@ function drawOutline(cell) {
   ctx.fillStyle = '#5a6675'; ctx.font = '18px ui-monospace, monospace'; ctx.textAlign = 'center';
   ctx.fillText(`${Math.round(cell.width)} mm`, canvas.width / 2, canvas.height - 12);
 }
-function selectCell(id, additive = false) {
+function selectCell(id, additive = false, keepAcrossBend = false) {
+  if (!keepAcrossBend) leaveAcrossBend();
   if (id != null && state.inspection && !state.inspection.panelIds.includes(id)) leaveInspection();
   if (additive) state.selectedIds = state.selectedIds.includes(id) ? state.selectedIds.filter(value => value !== id) : [...state.selectedIds, id];
   else state.selectedIds = id == null ? [] : [id];
@@ -995,6 +1006,7 @@ function updateWorkflowControls() {
   $('show-all-panels').disabled = !state.inspection;
   $('report-issue').disabled = !state.project || workflowBusy;
   $('export-handoff').disabled = workflowBusy || $('export-rhino').disabled || !sourceCanSave();
+  updateAcrossBendControls();
 }
 $('apply-project-limits').addEventListener('click', () => {
   try {
@@ -1007,7 +1019,7 @@ $('apply-project-limits').addEventListener('click', () => {
 });
 function changeEditLocks(all = false) {
   if (drag || cornerPending || state.generating || !state.layout) return;
-  finishPendingEdit(); const before = snapshot();
+  leaveAcrossBend(); finishPendingEdit(); const before = snapshot();
   const selected = state.selectedIds, unlock = selected.every(id => state.protectedCellIds.includes(id));
   state.protectedCellIds = all ? [] : readProtectedCellIds(unlock ? state.protectedCellIds.filter(id => !selected.includes(id)) : [...new Set([...state.protectedCellIds, ...selected])], state.layout.cells);
   recordEdit(before); if (state.solved && state.lastCalculation) state.lastCalculation = { ...state.lastCalculation, revision: state.project.revision };
@@ -1158,6 +1170,190 @@ $('export-handoff').addEventListener('click', async () => {
   finally {workflowBusy=false;updateWorkflowControls();}
 });
 
+function bendSeams() {
+  if (!state.layout) return [];
+  if (!acrossBendSeamCache.has(state.layout)) acrossBendSeamCache.set(state.layout, enumerateBendSeams(state.layout));
+  return acrossBendSeamCache.get(state.layout);
+}
+function stopAcrossBendPreview(clear = true) {
+  acrossBendSequence++; clearTimeout(acrossBendTimer); acrossBendTimer = null;
+  acrossBendValidationWorker?.terminate(); acrossBendValidationWorker = null;
+  const reject = acrossBendValidationReject; acrossBendValidationReject = null; reject?.(new Error('Preview cancelled.'));
+  acrossBendFitWorker?.terminate(); acrossBendFitWorker = null;
+  state.acrossBendPreviewBusy = false;
+  if (clear) state.acrossBendPreview = null;
+}
+function leaveAcrossBend() {
+  if (!state.acrossBendMode && !state.acrossBendPreview && !state.acrossBendPreviewBusy) return;
+  state.acrossBendMode = false; state.acrossBendSelection = null; acrossBendHover = null;
+  stopAcrossBendPreview(); drawAcrossBendPreview();
+  buildSeeds(); buildFittingOverlay(); updateViewportHint();
+  $('across-bend-toggle').setAttribute('aria-pressed', 'false'); $('across-bend-controls').hidden = true;
+  if (cornerPending?.kind === 'bridge-bend') cancelCornerPending();
+}
+function acrossBendNotice(message, error = false) {
+  $('across-bend-status').textContent = message;
+  $('across-bend-status').style.color = error ? '#9d462b' : '';
+}
+function updateAcrossBendControls() {
+  $('across-bend-controls').hidden = !state.acrossBendMode;
+  $('across-bend-toggle').setAttribute('aria-pressed', String(state.acrossBendMode));
+  $('across-bend-toggle').disabled = !state.ready || !canArrange() || !!drag;
+  const applying = cornerPending?.kind === 'bridge-bend', preview = state.acrossBendPreview;
+  const matches = preview && preview.sourceLayout === state.layout && preview.widthMm === Number($('across-bend-width').value) && preview.edgeId === state.acrossBendSelection?.edgeId;
+  $('apply-across-bend').disabled = !state.acrossBendMode || !matches || state.acrossBendPreviewBusy || !!cornerPending || !!drag || !canArrange();
+  $('across-bend-width').disabled = applying;
+  $('across-bend-selection').textContent = state.acrossBendSelection
+    ? `${state.acrossBendSelection.cellIds.map(panelId).join(' + ')} · total width; half on each side`
+    : 'Click a shared cell seam.';
+}
+function drawAcrossBendPreview() {
+  disposeGroup(acrossBendGroup);
+  for(const object of cellGroup.children)if(object.userData.acrossBendHidden){object.visible=true;delete object.userData.acrossBendHidden;}
+  if (!state.acrossBendMode || state.view !== 'surface') return;
+  const drawPath = (points, color, dashed = false) => {
+    const material = dashed ? new THREE.LineDashedMaterial({ color, dashSize: state.size * .025, gapSize: state.size * .015, depthTest: true })
+      : new THREE.LineBasicMaterial({ color, depthTest: true });
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points.map(vectors)), material);
+    if (dashed) line.computeLineDistances(); line.renderOrder = 3; acrossBendGroup.add(line);
+  };
+  const selected = state.acrossBendSelection;
+  if (selected) drawPath(selected.points, '#b16b08');
+  if (acrossBendHover && acrossBendHover.edgeId !== selected?.edgeId) drawPath(acrossBendHover.points, '#245db4');
+  const preview = state.acrossBendPreview;
+  if (!preview || preview.sourceLayout !== state.layout) return;
+  const trimmed = new Set(preview.change.trimmedCellIds);
+  for(const object of cellGroup.children)if(trimmed.has(object.userData.cellId)){object.visible=false;object.userData.acrossBendHidden=true;}
+  const fittedTrimmed = new Map((preview.fittedTrimmedCells||[]).map(cell=>[cell.id,cell]));
+  for(const cell of preview.trimmedCells){
+    const fitted=fittedTrimmed.get(cell.id),useFitted=fitted?.flatPositions?.length&&fitted.flatPositions.every(p=>p.every(Number.isFinite));
+    const positions=useFitted?fitted.flatPositions:cell.positions,triangles=useFitted?fitted.triangles:cell.triangles.map(face=>face.vertices),loops=useFitted?fitted.loops:cell.loops;
+    const mesh = new THREE.Mesh(geometry(positions,triangles),new THREE.MeshStandardMaterial({color:useFitted&&!fitted.valid?'#ce8c74':'#b7c9dc',roughness:.91,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1}));
+    acrossBendGroup.add(mesh);
+    for(const loop of loops)drawPath([...loop,loop[0]].map(index=>positions[index]),'#617a94');
+  }
+  const source = preview.sourceCell, fitted = preview.fittedCell;
+  const usableFitted = fitted?.flatPositions?.length && fitted.flatPositions.every(p => p.every(Number.isFinite));
+  const positions = usableFitted ? fitted.flatPositions : source.positions;
+  const triangles = usableFitted ? fitted.triangles : source.triangles.map(face => face.vertices);
+  const mesh = new THREE.Mesh(geometry(positions, triangles), new THREE.MeshBasicMaterial({ color: '#d79725', side: THREE.DoubleSide,
+    transparent: true, opacity: .68, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  mesh.renderOrder = 2; mesh.userData.acrossBendPreview = true; acrossBendGroup.add(mesh);
+  for (const loop of source.loops) drawPath([...loop,loop[0]].map(index => source.positions[index]), '#9a6418', true);
+  if (usableFitted) for (const loop of fitted.loops) drawPath([...loop,loop[0]].map(index => fitted.flatPositions[index]), '#ad6514');
+}
+function pickBendSeam(event) {
+  const rect = renderer.domElement.getBoundingClientRect(), screen = { x:event.clientX-rect.left,y:event.clientY-rect.top };
+  const front = sourceMesh && raycaster.intersectObject(sourceMesh)[0];
+  let best = null, closest = 10;
+  for (const seam of bendSeams()) for (let i = 1; i < seam.points.length; i++) {
+    const a = vectors(seam.points[i-1]), b = vectors(seam.points[i]), pa = a.clone().project(camera), pb = b.clone().project(camera);
+    if (pa.z < -1 || pa.z > 1 || pb.z < -1 || pb.z > 1) continue;
+    const x = (pa.x+1)*rect.width/2, y = (1-pa.y)*rect.height/2;
+    const dx = (pb.x-pa.x)*rect.width/2, dy = -(pb.y-pa.y)*rect.height/2;
+    const t = THREE.MathUtils.clamp(((screen.x-x)*dx+(screen.y-y)*dy)/(dx*dx+dy*dy||1),0,1);
+    const distance = Math.hypot(screen.x-x-t*dx,screen.y-y-t*dy);
+    if (distance >= closest) continue;
+    const point = a.lerp(b,t), depth = point.distanceTo(camera.position);
+    const tolerance = 24*depth*Math.tan(camera.fov*Math.PI/360)/rect.height;
+    if (front && depth > front.distance+tolerance) continue;
+    closest = distance; best = seam;
+  }
+  return best;
+}
+function chooseBendSeam(seam) {
+  stopAcrossBendPreview(); state.acrossBendSelection = seam; acrossBendHover = null;
+  if (!seam) {
+    acrossBendNotice('Click a shared seam between two cells. Outer shell edges cannot create an Across bend cell.',true);
+    drawAcrossBendPreview(); updateAcrossBendControls(); return;
+  }
+  selectCell(seam.cellIds[0],false,true); selectCell(seam.cellIds[1],true,true);
+  queueAcrossBendPreview();
+}
+function validateAcrossBendPreview(inputs, sequence) {
+  return new Promise((resolve,reject)=>{
+    const previewWorker=new Worker('./worker.js',{type:'module'});acrossBendValidationWorker=previewWorker;acrossBendValidationReject=reject;
+    const finish=()=>{previewWorker.terminate();if(acrossBendValidationWorker===previewWorker){acrossBendValidationWorker=null;acrossBendValidationReject=null;}};
+    previewWorker.onmessage=({data})=>{finish();data.error?reject(new Error(data.error)):resolve(data);};
+    previewWorker.onerror=error=>{finish();reject(new Error(error.message));};
+    previewWorker.postMessage({validationId:sequence,...inputs});
+  });
+}
+function queueAcrossBendPreview() {
+  stopAcrossBendPreview(); drawAcrossBendPreview(); updateAcrossBendControls();
+  if (!state.acrossBendMode || !state.acrossBendSelection) return;
+  const widthMm = Number($('across-bend-width').value);
+  if (!Number.isFinite(widthMm) || widthMm <= 0) { acrossBendNotice('Enter a positive total width in millimetres, then check the preview.',true); return; }
+  try { assertEditablePanelIds(state.acrossBendSelection.cellIds); }
+  catch (error) { acrossBendNotice(error.message,true); return; }
+  const sequence = acrossBendSequence, sourceLayout = state.layout, modelRevision = state.modelRevision;
+  const selection = state.acrossBendSelection, nextCellId = state.nextCellId;
+  const current = () => sequence === acrossBendSequence && state.acrossBendMode && sourceLayout === state.layout && modelRevision === state.modelRevision;
+  state.acrossBendPreviewBusy = true; acrossBendNotice('Checking the source boundary preview… The current layout is kept.'); updateAcrossBendControls();
+  acrossBendTimer = setTimeout(async () => {
+    acrossBendTimer = null;
+    try {
+      const {layout,change} = await validateAcrossBendPreview({ model:state.model,layout:sourceLayout,
+        transaction:{type:'bridge-bend',edgeId:selection.edgeId,widthMm,nextCellId} },sequence);
+      if (!current()) return;
+      assertProtectedLayoutUnchanged(sourceLayout,layout,state.protectedCellIds);
+      const sourceCell = layout.cells.find(cell => cell.id === change.newCellId);
+      state.acrossBendPreview = { sourceLayout,edgeId:selection.edgeId,widthMm,sourceCell,change,trimmedCells:layout.cells.filter(cell=>change.trimmedCellIds.includes(cell.id)),fittedCell:null,fitState:'pending' };
+      state.acrossBendPreviewBusy = false; drawAcrossBendPreview(); updateAcrossBendControls();
+      acrossBendNotice('Source boundary validated. Calculating the fitted preview… Apply accepts the source edit.');
+      const previewWorker = new Worker('./worker.js',{type:'module'}); acrossBendFitWorker = previewWorker;
+      const finish = () => { previewWorker.terminate(); if(acrossBendFitWorker===previewWorker)acrossBendFitWorker=null; };
+      const failedFit = message => {
+        if (!current()) return;
+        state.acrossBendPreview.fitState = 'failed';
+        acrossBendNotice(`Source boundary preview only. Fitting could not finish: ${message} Adjust the width, or Apply and inspect the panel checks.`,true);
+      };
+      previewWorker.onmessage = ({data}) => {
+        finish(); if (!current()) return;
+        if (data.error) { failedFit(data.error); return; }
+        const result = data.result, cell = result.cells.find(cell => cell.id === change.newCellId);
+        state.acrossBendPreview.fittedCell = cell; state.acrossBendPreview.fitState = 'ready';
+        state.acrossBendPreview.fittedTrimmedCells = result.cells.filter(cell=>change.trimmedCellIds.includes(cell.id));
+        const solids = new Map(result.solids.map(solid=>[solid.id,solid]));
+        const failed = result.cells.filter(cell=>!cell.valid||!solids.get(cell.id)?.valid);
+        const problem = failed.length ? describePanelProblems(failed[0],solids.get(failed[0].id)) : null;
+        acrossBendNotice(failed.length ? `Fitted preview: ${failed.length} panels need review. ${problem?.issues[0] || ''} Adjust the width, or Apply and inspect the checks.`
+          : 'Fitted preview ready: current flat and solid checks pass. Amber is the new panel; blue neighbours are trimmed. Other fitted panels may adjust after Apply.',failed.length>0);
+        drawAcrossBendPreview(); updateAcrossBendControls();
+      };
+      previewWorker.onerror = error => {finish();failedFit(error.message);};
+      previewWorker.postMessage({...captureDesign(state),id:sequence,model:state.model,layout,
+        panelOffsets:reconcilePanelOffsets(state.panelOffsets,layout,{clearIds:change.trimmedCellIds})});
+    } catch(error) {
+      if (!current()) return;
+      state.acrossBendPreviewBusy=false; state.acrossBendPreview=null;
+      state.latestRejection={type:'bridge-bend',cellIds:[...selection.cellIds],widthMm,message:error.message};
+      acrossBendNotice(`Preview unavailable: ${error.message} The current layout is kept.`,true); drawAcrossBendPreview(); updateAcrossBendControls();
+    }
+  },150);
+}
+$('across-bend-toggle').addEventListener('click', () => {
+  if(state.acrossBendMode) {leaveAcrossBend();updateViewportHint();updateEditAvailability();return;}
+  if(!canArrange()||!state.ready||drag)return;
+  const selected = [...state.selectedIds]; resetInteraction(); state.explode=0; $('explode').value=0;updateControlLabels();showView('surface');
+  state.acrossBendMode=true; acrossBendNotice('Click a shared seam, or start with two adjacent cells selected.');
+  const candidates=bendSeams().filter(seam=>selected.length===2&&seam.cellIds.every(id=>selected.includes(id)));
+  if(candidates.length===1)chooseBendSeam(candidates[0]);
+  else if(selected.length===2)acrossBendNotice(candidates.length?'These cells share several seams. Click the seam you want.':'Choose two cells that share a seam, or click a shared seam in the model.',true);
+  updateAcrossBendControls();updateViewportHint();buildCells();buildSeeds();buildCorners();
+});
+$('across-bend-width').addEventListener('input',queueAcrossBendPreview);
+$('cancel-across-bend').addEventListener('click',()=>{leaveAcrossBend();updateViewportHint();updateEditAvailability();setStatus('Across bend cancelled. The accepted layout is kept.');});
+$('apply-across-bend').addEventListener('click',()=>{
+  updateAcrossBendControls(); if($('apply-across-bend').disabled)return;
+  try {
+    assertEditablePanelIds(state.acrossBendSelection.cellIds); finishPendingEdit();
+    const before=snapshot(),transaction={type:'bridge-bend',edgeId:state.acrossBendSelection.edgeId,cellIds:[...state.acrossBendSelection.cellIds],widthMm:Number($('across-bend-width').value),nextCellId:state.nextCellId++};
+    stopAcrossBendPreview(false); acceptedProjectChange('reserve-panel-id',{newCellId:transaction.nextCellId});
+    commitDirectEdit(transaction,before);
+  } catch(error) {acrossBendNotice(error.message,true);}
+});
+
 function offsetValue(id = state.selected) { return state.panelOffsets.find(entry => entry.id === id)?.offsetMm ?? 0; }
 function setOffsetNotice(message) { $('offset-change-note').textContent = message; $('offset-change-note').hidden = !message; }
 function offsetEditable() { return !!state.layout && state.selectedIds.length === 1 && !state.protectedCellIds.includes(state.selected) && state.layout.cells.some(cell => cell.id === state.selected) && !state.generating && !cornerPending && !drag; }
@@ -1192,6 +1388,7 @@ function leaveOffsetMode() {
   state.offsetMode = false; $('offset-toggle').setAttribute('aria-pressed', 'false'); disposeGroup(offsetGroup);
 }
 function enableOffsetMode() {
+  leaveAcrossBend();
   leaveInspection();
   state.offsetMode = true; state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false;
   state.explode = 0; $('explode').value = 0; updateControlLabels();
@@ -1288,6 +1485,7 @@ function finishPendingEdit() {
   if (needsSolve) requestLayout();
 }
 function beginEdit(key) {
+  leaveAcrossBend();
   cancelCornerPending();
   if (pendingEdit?.key !== key) { finishPendingEdit(); pendingEdit = { key, before: snapshot() }; }
 }
@@ -1350,6 +1548,7 @@ function updatePatternControls() {
     : supportsSizing && budget > DEFAULT_MAX_GENERATED_CELLS ? 'More cells take longer. Undo restores edits.' : 'Replaces edits. Undo restores them.';
 }
 function restoreSnapshot(entry) {
+  leaveAcrossBend();
   setOffsetNotice('');
   cancelPendingEdit();
   generationSequence++; state.generating = false;
@@ -1422,6 +1621,7 @@ function validateMergeSelection() {
   if (reached.size !== selected.size) throw new Error('Select cells connected by shared edges.');
 }
 $('multi-select').addEventListener('click', () => {
+  leaveAcrossBend();
   leaveInspection();
   leaveOffsetMode();
   cancelCornerPending();
@@ -1436,7 +1636,7 @@ $('multi-select').addEventListener('click', () => {
 $('clear-selection').addEventListener('click', () => selectCell(null));
 $('merge-cells').addEventListener('click', () => {
   if (state.busy || !state.solved || cornerPending || drag || state.view === 'reference') return;
-  finishPendingEdit();
+  leaveAcrossBend(); finishPendingEdit();
   try {
     if (state.directBase || state.protectedCellIds.length || state.pattern.type !== 'organic') {
       validateMergeSelection();
@@ -1468,10 +1668,11 @@ document.addEventListener('keydown', event => {
 
 function updateViewportHint() {
   updateWorkspaceChrome();
-  junctionGroup.visible = !state.cornerMode && !state.inspection;
+  junctionGroup.visible = !state.cornerMode && !state.inspection && !state.acrossBendMode;
   $('viewport-hint').textContent = state.inspection ? 'Joint inspection · Cutaway changes only the view · Show all or Esc to return'
     : state.view === 'reference' ? 'Drag to orbit · Scroll to zoom'
     : state.offsetMode ? 'Select one panel · Drag the amber handle · Release to check neighbours · Esc cancels'
+    : state.acrossBendMode ? 'Click a shared seam · Preview a width · Apply adds a cell across the bend · Esc cancels'
     : state.splitMode ? 'Drag within the selected cell to draw a divider · Release to apply · Esc cancels'
     : state.cornerMode ? 'Drag a corner · Alt suppresses snapping · Release to apply · Esc cancels'
     : state.multiSelect ? 'Click cells to add or remove them · Drag to orbit · Scroll to zoom'
@@ -1524,12 +1725,13 @@ function cancelCentreDrag() {
 function resetInteraction() {
   const generating = state.generating, moving = !!drag || !!cornerPending;
   cancelGeneration(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending();
+  leaveAcrossBend();
   state.inspection = null; clearInspectionDisplay(); endCheckpointComparison(false);
   // Escape ends the editing tool, but retains an entered slider value.
   finishPendingEdit();
   state.edit = false; state.cornerMode = false; state.multiSelect = false; state.splitMode = false; state.offsetMode = false;
   state.selectedCorner = null; down = null; hoverId = null;
-  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell', 'offset-toggle']) $(id).setAttribute('aria-pressed', 'false');
+  for (const id of ['edit-toggle', 'corner-toggle', 'multi-select', 'split-cell', 'offset-toggle', 'across-bend-toggle']) $(id).setAttribute('aria-pressed', 'false');
   controls.enabled = true; viewport.style.cursor = 'default';
   clearCornerSketch(); disposeGroup(cornerGuide);
   for (const object of cellGroup.children) if (object.isMesh) object.material.emissive.set('#000000');
@@ -1553,9 +1755,10 @@ async function commitCornerMove(moved) {
 }
 async function commitDirectEdit(transaction, before) {
   const sequence = ++cornerSequence, modelRevision = state.modelRevision;
-  const merging = transaction.type === 'merge-cells', movingCell = transaction.type === 'move-cell', splitting = transaction.type === 'split-cell';
-  cornerPending = { sequence, before, kind: splitting ? 'split' : merging ? 'merge' : movingCell ? 'cell' : 'corner' };
-  $('corner-status').textContent = splitting ? 'Checking the divider…' : merging ? 'Checking the cell merge…' : movingCell ? 'Checking the centre move…' : 'Checking the corner move…';
+  const bridging = transaction.type === 'bridge-bend', merging = transaction.type === 'merge-cells', movingCell = transaction.type === 'move-cell', splitting = transaction.type === 'split-cell';
+  cornerPending = { sequence, before, kind: bridging ? 'bridge-bend' : splitting ? 'split' : merging ? 'merge' : movingCell ? 'cell' : 'corner' };
+  $('corner-status').textContent = bridging ? 'Checking the Across bend edit…' : splitting ? 'Checking the divider…' : merging ? 'Checking the cell merge…' : movingCell ? 'Checking the centre move…' : 'Checking the corner move…';
+  if(bridging)acrossBendNotice('Checking the Across bend edit… Cancel keeps the current layout.');
   setStatus($('corner-status').textContent); updateEditAvailability(); updateExportAvailability();
   try {
     const { layout, change, surface } = await validateDesignGeometry({ model: state.model, layout: state.layout, transaction });
@@ -1568,26 +1771,28 @@ async function commitDirectEdit(transaction, before) {
     }
     state.directBase ??= state.layout;
     state.layout = immutableLayout(layout); state.sourceSurface = surface; state.lastLayoutChange = change ?? null;
-    const clearedOffsets = clearAffectedOffsets(merging ? transaction.cellIds : splitting ? [transaction.cellId] : [], layout);
+    const clearedOffsets = clearAffectedOffsets(bridging ? change.trimmedCellIds : merging ? transaction.cellIds : splitting ? [transaction.cellId] : [], layout);
     const survivors = new Set(layout.cells.map(cell => cell.id));
     state.selectedIds = state.selectedIds.filter(id => survivors.has(id));
     if (merging) state.selectedIds = [change?.survivingCellId ?? Math.min(...transaction.cellIds)].filter(id => survivors.has(id));
-    if (splitting) state.selectedIds = [change.newCellId];
+    if (splitting || bridging) state.selectedIds = [change.newCellId];
     state.selected = state.selectedIds.at(-1) ?? null;
     state.selectedCorner = change?.survivingCornerId ?? null;
     recordEdit(before);
-    state.latestAcceptedEdit = { ...transaction, revision: state.project.revision };
+    state.latestAcceptedEdit = { ...transaction, ...(bridging?{cellIds:change.trimmedCellIds,newCellId:change.newCellId,affectedCellIds:change.affectedCellIds}:{}), revision: state.project.revision };
     const removed = change?.removedCellIds ?? [];
-    $('corner-status').textContent = splitting ? `Cell divided. ${panelId(change.newCellId)} added; Undo restores the original.` : merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
+    $('corner-status').textContent = bridging ? `${panelId(change.newCellId)} added across the bend. Its two neighbours were trimmed; Undo restores them. Review the new part in Flat and Solid.` : splitting ? `Cell divided. ${panelId(change.newCellId)} added; Undo restores the original.` : merging ? 'Cells merged. The edited layout is preserved.' : movingCell ? 'Centre moved. Earlier edits are preserved; panels are refitting.' : removed.length
       ? `Corner applied · Removed ${removed.map(panelId).join(', ')}. Undo restores them.`
       : change?.collapsedEdgeIds?.length ? 'Corners joined. Panels refit the edited layout.' : 'Corner applied. Panels refit the edited layout.';
-    if (clearedOffsets) setOffsetNotice(`Offsets on ${splitting ? 'divided' : merging ? 'merged' : 'removed'} panels were cleared. Undo restores the panels and their offsets.`);
+    if (clearedOffsets) setOffsetNotice(`Offsets on ${bridging ? 'trimmed' : splitting ? 'divided' : merging ? 'merged' : 'removed'} panels were cleared. Undo restores the panels and their offsets.`);
+    if(bridging)leaveAcrossBend();
     clearCornerSketch();
     requestLayout({ preserveSource: true });
   } catch (error) {
     if (sequence !== cornerSequence) return;
     state.latestRejection = { ...transaction, message: error.message };
-    $('corner-status').textContent = `${splitting ? 'Divider' : merging ? 'Merge' : 'Move'} not applied: ${error.message}`;
+    $('corner-status').textContent = `${bridging ? 'Across bend' : splitting ? 'Divider' : merging ? 'Merge' : 'Move'} not applied: ${error.message}`;
+    if(bridging){stopAcrossBendPreview();acrossBendNotice($('corner-status').textContent,true);drawAcrossBendPreview();}
     setStatus($('corner-status').textContent, true);
   } finally {
     if (sequence === cornerSequence) {
@@ -1598,6 +1803,7 @@ async function commitDirectEdit(transaction, before) {
   }
 }
 $('corner-toggle').addEventListener('click', () => {
+  leaveAcrossBend();
   leaveInspection();
   leaveOffsetMode();
   finishPendingEdit(); cancelCornerPending();
@@ -1617,7 +1823,7 @@ $('corner-toggle').addEventListener('click', () => {
 $('split-cell').addEventListener('click', () => {
   if ($('split-cell').disabled) return;
   try { assertEditablePanelIds(state.selectedIds); } catch (error) { setStatus(error.message,true); return; }
-  leaveInspection();
+  leaveAcrossBend(); leaveInspection();
   leaveOffsetMode();
   finishPendingEdit(); cancelCornerPending();
   state.splitMode = !state.splitMode;
@@ -1655,7 +1861,7 @@ $('reset-corners').addEventListener('click', () => {
   recordEdit(before); requestLayout();
   $('corner-status').textContent = 'Corners reset. Merged cells are kept.';
 });
-$('allow-cell-removal').addEventListener('change', () => { state.allowCellRemoval = $('allow-cell-removal').checked; acceptedProjectChange('preference'); });
+$('allow-cell-removal').addEventListener('change', () => { leaveAcrossBend(); state.allowCellRemoval = $('allow-cell-removal').checked; acceptedProjectChange('preference'); });
 
 // Pointer capture lets a centre be moved without also orbiting the camera.
 let drag = null, down = null, hoverId = null;
@@ -1859,7 +2065,11 @@ renderer.domElement.addEventListener('pointermove', event => {
   }
   const dot = !state.generating && (state.cornerMode && cornerGroup.visible && !cornerPending && raycaster.intersectObjects(cornerGroup.children)[0]
     || state.edit && !state.multiSelect && !event.shiftKey && canArrange() && seedGroup.visible && raycaster.intersectObjects(seedGroup.children)[0]);
-  viewport.style.cursor = state.splitMode && state.view === 'surface' ? 'crosshair' : dot ? 'grab' : 'default';
+  if (state.acrossBendMode && !cornerPending) {
+    const seam = pickBendSeam(event);
+    if (seam?.edgeId !== acrossBendHover?.edgeId) {acrossBendHover=seam;drawAcrossBendPreview();}
+    viewport.style.cursor = seam ? 'crosshair' : 'default';
+  } else viewport.style.cursor = state.splitMode && state.view === 'surface' ? 'crosshair' : dot ? 'grab' : 'default';
   const hovered = panelHits()[0]?.object.userData.cellId ?? null;
   if (hovered !== hoverId) {
     hoverId = hovered;
@@ -1893,8 +2103,9 @@ function endDrag(event) {
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     event.stopImmediatePropagation(); event.preventDefault();
   } else if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) < 5 && state.view !== 'reference') {
-    cast(event); const hit = panelHits()[0];
-    if (hit) selectCell(hit.object.userData.cellId, event.shiftKey || state.multiSelect);
+    cast(event);
+    if (state.acrossBendMode) {if(!cornerPending&&canArrange())chooseBendSeam(pickBendSeam(event));}
+    else {const hit = panelHits()[0];if (hit) selectCell(hit.object.userData.cellId, event.shiftKey || state.multiSelect);}
   }
   down = null;
 }
@@ -1908,7 +2119,7 @@ function cancelGeneration() {
 async function freshLayout({ applySettings = false } = {}) {
   if (state.generating || !state.ready || state.busy || !state.solved || drag || cornerPending) return;
   if (state.protectedCellIds.length) { setStatus('Unlock source edits before creating a new arrangement. Your locked cells are kept.', true); return; }
-  finishPendingEdit();
+  leaveAcrossBend(); finishPendingEdit();
   const before = snapshot(), modelRevision = state.modelRevision, sequence = ++generationSequence;
   const candidate = captureDesign(state);
   try {
@@ -1955,7 +2166,7 @@ for (const [id, key, factor] of [['straightness', 'straightness', 0.01], ['thick
 }
 $('carve-inner').addEventListener('change', () => { finishPendingEdit(); const before = snapshot(); state.carve = $('carve-inner').checked; recordEdit(before); showView('solid'); requestLayout(); });
 $('minimum-thickness').addEventListener('change', () => {
-  finishPendingEdit(); const before = snapshot();
+  leaveAcrossBend(); finishPendingEdit(); const before = snapshot();
   const value = Number($('minimum-thickness').value);
   state.minimumThickness = Math.min(100, Math.max(3, Number.isFinite(value) ? value : 12));
   $('minimum-thickness').value = state.minimumThickness;
@@ -1985,6 +2196,7 @@ document.querySelectorAll('[data-size]').forEach(button => button.addEventListen
 $('regenerate').addEventListener('click', () => freshLayout({ applySettings: true }));
 $('reset-layout').addEventListener('click', () => freshLayout());
 $('edit-toggle').addEventListener('click', () => {
+  leaveAcrossBend();
   leaveInspection();
   leaveOffsetMode();
   cancelCornerPending();
@@ -2005,9 +2217,10 @@ document.querySelectorAll('[data-camera-view]').forEach(button => button.addEven
   cancelCornerDrag(); cancelCornerPending(); fitView(button.dataset.cameraView); projectUI?.viewChanged();
 }));
 document.querySelectorAll('[data-browser-view]').forEach(button => button.addEventListener('click', () => showView(button.dataset.browserView)));
-$('explode').addEventListener('input', () => { leaveInspection(); leaveOffsetMode(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
+$('explode').addEventListener('input', () => { leaveAcrossBend(); leaveInspection(); leaveOffsetMode(); cancelCornerDrag(); cancelCentreDrag(); cancelCornerPending(); state.explode = Number($('explode').value); updateControlLabels(); buildCells(); buildSeeds(); buildCorners(); });
 $('explode').addEventListener('change', () => fitView(null));
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+  if(button.dataset.view!=='surface')leaveAcrossBend();
   cancelCornerDrag(); cancelCornerPending();
   if (['surface','reference'].includes(button.dataset.view)) leaveInspection();
   state.view = button.dataset.view;

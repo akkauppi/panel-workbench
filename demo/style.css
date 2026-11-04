@@ -119,6 +119,10 @@ button { transition: background-color .1s, border-color .1s; }
 .active-tool-options > .control-hint { margin: 0; color: #45586c; font-size: 11px; }
 .selection-context { margin-left: auto; flex-shrink: 0; font-size: 11px; color: #52687d; }
 .corner-controls { display: flex; align-items: center; flex-wrap: wrap; column-gap: 13px; row-gap: 4px; }
+.across-bend-controls:not([hidden]) { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; }
+.across-bend-controls > label { display:flex; align-items:center; gap:5px; font-size:11px; white-space:nowrap; }
+.across-bend-controls input { width:78px; }
+.across-bend-controls > p { flex-basis:100%; margin:0; }
 .corner-controls > .checkbox-row { margin: 0; color: #344c63; font-size: 11px; white-space: nowrap; }
 #corner-status { margin: 0; flex: 1 1 220px; color: #45586c; font-size: 11px; }
 body:not(:has(#edit-toggle[aria-pressed="true"])) #move-cells-help { display: none; }

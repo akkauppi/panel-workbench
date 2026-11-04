@@ -143,6 +143,15 @@ test('diagnostic report also works before a calculation exists and caps ID lists
   assert.doesNotMatch(JSON.stringify(report), /secret-project|\/home|private.test/);
 });
 
+test('across-bend feedback retains width and panel identities without source points', () => {
+  const report = createDiagnosticReport({ latestAcceptedEdit: { type: 'bridge-bend', widthMm: 80, cellIds: [2, 1], newCellId: 4,
+    affectedCellIds: [4, 2, 1], edgeId: 'private-edge-at-[1,2,3]', points: [[1, 2, 3]], name: 'private model' } });
+  assert.deepEqual(report.latestAcceptedEdit, { type: 'bridge-bend', widthMm: 80, cellIds: [1, 2], newCellId: 4, affectedCellIds: [1, 2, 4] });
+  for (const widthMm of [NaN, Infinity, -1, 0, 1e8, 'private']) {
+    assert.equal(createDiagnosticReport({ latestRejection: { type: 'bridge-bend', widthMm } }).latestRejection.widthMm, undefined);
+  }
+});
+
 test('diagnostics include only validated project limits and protected panel numbers', () => {
   const report = createDiagnosticReport({ settings: {
     projectLimits: { stockWidthMm: 1220, stockHeightMm: 2440, minEdgeMm: 15, maxDeviationMm: 25,

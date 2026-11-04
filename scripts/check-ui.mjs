@@ -537,7 +537,7 @@ function assertNeutralTools(label) {
   assert.equal(state.selected, null, `${label}: clears the selected panel`);
   assert.deepEqual(state.selectedIds, [], `${label}: clears multi-selection`);
   assert.equal(state.selectedCorner, null, `${label}: clears the selected corner`);
-  for (const [id, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect'], ['split-cell', 'splitMode']]) {
+  for (const [id, field] of [['edit-toggle', 'edit'], ['corner-toggle', 'cornerMode'], ['multi-select', 'multiSelect'], ['split-cell', 'splitMode'], ['across-bend-toggle','acrossBendMode']]) {
     assert.equal(state[field], false, `${label}: resets ${field}`);
     assert.equal($(id).getAttribute('aria-pressed'), 'false', `${label}: ${id} reflects its inactive mode`);
   }
@@ -2341,6 +2341,90 @@ escape();heldValidationReplies[heldSplitIndex].deliver();await Promise.resolve()
 assertNeutralTools('pending divider cancellation');assert.deepEqual(currentDesign(),pendingBefore);
 assert.ok(state.nextCellId>afterSplitNextId,'cancelled validation retires the reserved ID');
 console.log('PASS divider preview, source preservation, undo/redo, ID retirement, save/reopen and cancelled stale replies');
+
+// Across bend uses actual worker validation for preview and Apply. Its draft
+// must never mutate the accepted layout, reserve IDs or leave hidden faces.
+const {rebuildSurfaceCells:rebuildBendSource}=await import(new URL('geometry.js',demo).href);
+const {captureLayout:captureBendLayout,layoutRecipe:bendRecipe}=await import(new URL('layout.js',demo).href);
+const bendVertices=[],bendTriangles=[],bendOwners=[],bendXs=[-400,-200,0,200,400];
+for(let y=0;y<=4;y++)for(const x of bendXs)bendVertices.push([x,y*250,Math.abs(x)*.6]);
+for(let y=0;y<4;y++)for(let x=0;x<4;x++){
+  const a=y*5+x;bendTriangles.push([a,a+1,a+6],[a,a+6,a+5]);bendOwners.push(x<2?0:1,x<2?0:1);
+}
+const bendModel={vertices:bendVertices,triangles:bendTriangles};
+const bendSeeds=[{id:0,position:[-200,500,120],weight:1},{id:1,position:[200,500,120],weight:1}];
+const bendBuilders=bendSeeds.map(seed=>{
+  const faces=bendTriangles.filter((_,i)=>bendOwners[i]===seed.id),indices=[...new Set(faces.flat())];
+  return{id:seed.id,seed:seed.position,weight:1,memberSeedIds:[seed.id],positions:indices.map(index=>bendVertices[index]),triangles:faces.map(face=>face.map(index=>indices.indexOf(index)))};
+});
+const bendLayout=captureBendLayout(bendModel,rebuildBendSource(bendModel,bendBuilders),{recipe:bendRecipe({seeds:bendSeeds,size:500,randomSeed:7,variation:.3})});
+const bendStudy=createStudy({rawModel:bendModel,seeds:bendSeeds,layout:bendLayout,size:500,randomSeed:7,variation:.3,thickness:10,roundover:0,
+  panelOffsets:[{id:0,offsetMm:10},{id:1,offsetMm:-5}],name:'public-across-bend-fixture',view:'surface'},
+  {units:'mm',up:'z',camera:[900,-1500,1800],target:[0,500,60]});
+await openStudy(bendStudy,'Across bend fixture');escape();
+const beforeBend=currentDesign(),beforeBendProject=structuredClone(state.project),beforeBendOffsets=structuredClone(state.panelOffsets),beforeBendId=state.nextCellId;
+function chooseBend(){
+  if(!state.acrossBendMode)clickControl('across-bend-toggle');
+  const point=projectWorld([0,500,0]);pointer(canvas,'pointerdown',point.x,point.y);pointer(canvas,'pointerup',point.x,point.y);
+  assert.deepEqual(state.acrossBendSelection?.cellIds,[0,1],'seam click selects its two source cells');
+}
+async function readyBend(width=100){chooseBend();input('across-bend-width',width);await until(()=>state.acrossBendPreview?.widthMm===width&&state.acrossBendPreview.fitState==='ready','source and fitted Across bend preview');}
+await readyBend();
+assert.deepEqual(currentDesign(),beforeBend);assert.deepEqual(state.project,beforeBendProject);assert.equal(state.nextCellId,beforeBendId);
+assert.equal(state.acrossBendPreview.fittedCell.valid,true);assert.equal(state.acrossBendPreview.fittedTrimmedCells.length,2);
+assert.equal($('apply-across-bend').disabled,false);assert.match($('across-bend-status').textContent,/Fitted preview ready/);
+const hiddenBendFaces=()=>globalThis.__uiRenderers[0].scene.children.flatMap(group=>group.children||[]).filter(object=>object.userData.acrossBendHidden);
+assert.ok(hiddenBendFaces().length>0,'preview replaces the original pair with candidate geometry');
+input('across-bend-width',2000);await until(()=>!state.acrossBendPreviewBusy&&/Reduce|reduce|width/i.test($('across-bend-status').textContent),'excessive bridge width is explained');
+assert.equal(state.acrossBendPreview,null);assert.equal($('apply-across-bend').disabled,true);assert.equal(hiddenBendFaces().length,0);
+input('across-bend-width',0);assert.match($('across-bend-status').textContent,/positive total width/);
+assert.deepEqual(currentDesign(),beforeBend);assert.equal(state.nextCellId,beforeBendId);
+
+const previewFitIndex=heldFitReplies.length;holdNextFitReply=true;input('across-bend-width',100);
+await until(()=>heldFitReplies.length>previewFitIndex,'hold fitted Across bend preview');
+assert.equal(state.acrossBendPreview.fitState,'pending');assert.equal($('apply-across-bend').disabled,false,'a validated source remains applicable while fitting is pending');
+escape();assertNeutralTools('Escape from Across bend fitted preview');heldFitReplies[previewFitIndex].deliver();await Promise.resolve();await Promise.resolve();
+assert.equal(state.acrossBendPreview,null);assert.equal(hiddenBendFaces().length,0);assert.deepEqual(currentDesign(),beforeBend);
+
+clickControl('across-bend-toggle');const previewSourceIndex=heldValidationReplies.length;holdNextValidationReply=true;chooseBend();
+await until(()=>heldValidationReplies.length>previewSourceIndex,'hold source Across bend preview');
+input('across-bend-width',120);heldValidationReplies[previewSourceIndex].deliver();
+await until(()=>state.acrossBendPreview?.widthMm===120&&state.acrossBendPreview.fitState==='ready','newer bridge width supersedes a stale preview');
+assert.deepEqual(currentDesign(),beforeBend);assert.equal(state.nextCellId,beforeBendId);
+clickControl('cancel-across-bend');assert.equal(state.acrossBendMode,false);assert.equal(hiddenBendFaces().length,0);
+
+escape();clickSeed(0);clickSeed(1,{shiftKey:true});clickControl('across-bend-toggle');
+assert.deepEqual(state.acrossBendSelection.cellIds,[0,1],'two adjacent selected cells preselect their seam');
+input('across-bend-width',100);await until(()=>state.acrossBendPreview?.fitState==='ready','preselected bridge preview');
+const pendingBridgeIndex=heldValidationReplies.length,historyBeforeBridge=state.history.length;holdNextValidationReply=true;clickControl('apply-across-bend');
+await until(()=>heldValidationReplies.length>pendingBridgeIndex,'hold Across bend Apply validation');
+assert.equal(state.nextCellId,beforeBendId+1,'Apply reserves one new identity');
+escape();heldValidationReplies[pendingBridgeIndex].deliver();await Promise.resolve();await Promise.resolve();
+assertNeutralTools('Escape from Across bend Apply');assert.deepEqual(currentDesign(),beforeBend);assert.equal(state.history.length,historyBeforeBridge);
+assert.equal(state.nextCellId,beforeBendId+1,'cancelled Apply never reuses its reserved identity');
+
+await readyBend();const appliedBendId=state.nextCellId;
+await edit(()=>clickControl('apply-across-bend'),'apply Across bend');
+assert.equal(state.acrossBendMode,false);assert.equal(state.layout.cells.length,3);assert.deepEqual(state.layout.cells.map(cell=>cell.id),[0,1,appliedBendId]);
+assert.equal(state.selected,appliedBendId);assert.deepEqual(state.rawModel,bendModel);assert.deepEqual(state.panelOffsets,[]);
+assert.deepEqual(state.latestAcceptedEdit.cellIds,[0,1]);assert.equal(state.latestAcceptedEdit.newCellId,appliedBendId);
+assert.ok(state.result.stats.coverageError<1e-10);assert.equal(state.cells.find(cell=>cell.id===appliedBendId).valid,true);
+const acceptedBend=currentDesign(),acceptedBendId=state.nextCellId;
+await edit(()=>key('z'),'undo Across bend');assert.deepEqual(currentDesign(),beforeBend);assert.deepEqual(state.panelOffsets,beforeBendOffsets);assert.equal(state.nextCellId,acceptedBendId);
+await edit(()=>key('z',{shiftKey:true}),'redo Across bend');assert.deepEqual(currentDesign(),acceptedBend);assert.deepEqual(state.panelOffsets,[]);
+const savedBend=await saveStudy();await openStudy(savedBend,'reopen Across bend source graph');assert.deepEqual(currentDesign(),acceptedBend);assert.equal(state.nextCellId,acceptedBendId);
+
+const lockedBend=createStudy({...bendStudy,protectedCellIds:[0]},{units:'mm',up:'z'});
+await openStudy(lockedBend,'locked Across bend fixture');const lockedBendBefore=currentDesign(),lockedBendCounter=state.nextCellId;
+chooseBend();assert.match($('across-bend-status').textContent,/locked|Unlock/);assert.equal($('apply-across-bend').disabled,true);
+assert.deepEqual(currentDesign(),lockedBendBefore);assert.equal(state.nextCellId,lockedBendCounter);clickControl('cancel-across-bend');
+await openStudy(bendStudy,'Across bend replacement race');clickControl('across-bend-toggle');
+const replacementPreviewIndex=heldValidationReplies.length;holdNextValidationReply=true;chooseBend();
+await until(()=>heldValidationReplies.length>replacementPreviewIndex,'hold preview before document replacement');
+await openStudy(splitSaved,'replace document during Across bend preview');const afterBendReplacement=preservedDocument();
+heldValidationReplies[replacementPreviewIndex].deliver();await Promise.resolve();await Promise.resolve();
+assert.equal(state.acrossBendMode,false);assert.equal(state.acrossBendPreview,null);assert.deepEqual(preservedDocument(),afterBendReplacement);
+console.log('PASS Across bend source/fitted previews, rejected widths, stale replies, Cancel/Escape, reserved IDs, locks, offsets, Undo and study restoration');
 
 // Laser preparation is asynchronous and invalidated by later design/settings edits.
 clickControl('open-laser');assert.equal($('laser-dialog').open,true);

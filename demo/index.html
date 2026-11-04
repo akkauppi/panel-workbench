@@ -91,6 +91,7 @@
         <div class="ribbon-group">
           <div class="ribbon-group-content">
             <button id="split-cell" class="ribbon-command ribbon-large" type="button" aria-pressed="false" disabled=""><svg><use href="#i-corner"></use></svg>Divide cell</button>
+            <button id="across-bend-toggle" class="ribbon-command ribbon-large" type="button" aria-pressed="false" disabled title="Create a narrow cell across a shared seam"><svg><use href="#i-corner"></use></svg>Across bend</button>
             <button id="merge-cells" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-merge"></use></svg>Merge selected</button>
             <button id="clear-selection" class="ribbon-command ribbon-large" type="button" disabled=""><svg><use href="#i-clear"></use></svg>Clear</button>
             <button id="lock-selected" class="ribbon-command ribbon-large" type="button" disabled title="Protect selected source cells from direct edits; fitted geometry may still change"><svg><use href="#i-select"></use></svg>Lock edits</button>
@@ -344,6 +345,14 @@
         <p id="move-cells-help" class="control-hint">Drag a centre to reshape neighbouring cells. Merged cell centres stay fixed.</p>
         <p class="control-hint split-help">Drag within the selected cell to set a divider. It extends to the edges. Release to divide; Escape cancels.</p>
         <p class="control-hint multi-select-help">Click cells to add or remove them from the selection. Shift-click also adds cells.</p>
+        <div id="across-bend-controls" class="across-bend-controls" hidden>
+          <label for="across-bend-width">Width <span class="number-with-unit"><input id="across-bend-width" type="number" min="0.1" step="1" value="100"><span>mm</span></span></label>
+          <button id="apply-across-bend" class="button" type="button" disabled>Apply</button>
+          <button id="cancel-across-bend" class="button" type="button">Cancel</button>
+          <button class="info-button" type="button" popovertarget="across-bend-info" aria-label="About Across bend"><svg><use href="#i-info"></use></svg></button>
+          <span id="across-bend-selection" class="control-hint">Click a shared cell seam.</span>
+          <p id="across-bend-status" class="control-hint" role="status">Choose a seam to preview a new cell.</p>
+        </div>
         <div class="corner-controls">
           <label class="checkbox-row"><input id="allow-cell-removal" type="checkbox" checked="" aria-describedby="cell-removal-help"><span>Allow cell removal</span></label>
           <details class="tool-help">
@@ -367,6 +376,15 @@
       <p>The source shell stays unchanged. Some moves cannot form usable parts with the surrounding panels. Reduce the distance, Reset, Undo, or reshape nearby cells. Your study can still be saved; production export waits for valid parts.</p>
       <p>Source edits recalculate the usual fitted plane. Divide or merge clears offsets on those panels; New arrangement and Reset cell edits clear all offsets. Undo restores them. Changing the outside face does not reverse the arrow.</p>
       <a href="https://github.com/akkauppi/panel-workbench/blob/main/docs/offset-panels.md" target="_blank" rel="noopener">Read the illustrated offset guide</a>
+    </div>
+    <div id="across-bend-info" class="format-info" popover role="note" aria-labelledby="across-bend-info-title">
+      <button class="info-close" type="button" popovertarget="across-bend-info" popovertargetaction="hide" aria-label="Close Across bend information">×</button>
+      <h2 id="across-bend-info-title">Add a cell across a bend</h2>
+      <p>Choose Across bend and click a shared seam in the Cells view. You can also select two adjacent cells before opening the tool. The highlighted pair will be trimmed to make room for one new cell across their seam.</p>
+      <p>Width is the total requested width, half on each side. It is measured perpendicular to the line joining the seam endpoints in each side's local editing plane. It is exact for a straight seam between flat sides; curved source and final fitted widths can differ.</p>
+      <p>The boundary preview follows the source shell. A fitted preview of the amber new panel and its two blue neighbours appears after the calculation finishes. Other fitted panels may adjust after Apply. The usual flat and solid checks still apply; no particular panel angle or resolved part is guaranteed.</p>
+      <p>Choose one unbranched shared seam with enough material on both sides. A curved seam must fit inside the strip and may need a larger width; a width that consumes a neighbour must be reduced. The preview explains when a different seam or arrangement is needed. Unlock affected cells first. Offsets on the two trimmed panels are cleared; Undo restores them.</p>
+      <p>Apply adds a named panel that is kept in the saved study. Cancel or Escape leaves the accepted arrangement intact. <a href="https://github.com/akkauppi/panel-workbench/blob/main/docs/across-bend.md" target="_blank" rel="noopener">Across bend · illustrated guide</a></p>
     </div>
     <div id="curvature-info" class="format-info" popover role="note" aria-labelledby="curvature-info-title">
       <button class="info-close" type="button" popovertarget="curvature-info" popovertargetaction="hide" aria-label="Close curvature sizing information">×</button>

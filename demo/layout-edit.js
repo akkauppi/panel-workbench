@@ -540,6 +540,122 @@ export function previewCellSplit(model,layout,operation) {
   catch(error){return {segments:[],issue:error.message};}
 }
 
+/** Complete logical seams, excluding perimeter edges. A seam may contain many
+ * source-triangle samples; the first stable edge ID identifies the whole path. */
+export function enumerateBendSeams(layout) {
+  return network(layout).arcs.filter(arc=>!arc.boundary&&arc.owners.size===2).map(arc=>({
+    edgeId:arc.id,edgeIds:[...arc.edges],cellIds:[...arc.owners.keys()].sort((a,b)=>a-b),points:arc.points.map(p=>[...p]),
+  }));
+}
+
+// A new boundary point must also subdivide the neighbouring source triangle.
+// Its shape and ownership do not change, and untouched neighbours stay exact.
+function bridgeNeighbours(layout,selected,boundaryCuts,affected) {
+  const edges=new Map(layout.edges.map(edge=>[pairKey(...edge.vertices),edge])),cutsByCell=new Map();
+  for(const cut of boundaryCuts)for(const owner of edges.get(pairKey(...cut.vertices))?.cells||[]){
+    if(selected.has(owner))continue;
+    if(!cutsByCell.has(owner))cutsByCell.set(owner,[]);
+    const cuts=cutsByCell.get(owner);
+    if(!cuts.some(other=>pairKey(...other.vertices)===pairKey(...cut.vertices)&&key(other.point)===key(cut.point)))cuts.push(cut);
+    affected.add(owner);
+  }
+  return layout.cells.filter(cell=>!selected.has(cell.id)).map(cell=>{
+    const builder={id:cell.id,seed:cell.seed,weight:cell.weight,memberSeedIds:cell.memberSeedIds,positions:cell.positions,triangles:cell.triangles.map(face=>face.vertices),loops:cell.loops};
+    const cuts=cutsByCell.get(cell.id);if(!cuts)return builder;
+    builder.positions=cell.positions.map(point=>[...point]);builder.triangles=[];delete builder.loops;
+    const map=new Map(builder.positions.map((point,i)=>[key(point),i]));
+    const vertex=point=>{const k=key(point);if(!map.has(k)){map.set(k,builder.positions.length);builder.positions.push([...point]);}return map.get(k);};
+    for(const face of cell.triangles){
+      const ring=[];let changed=false;
+      for(let i=0;i<3;i++){
+        const p=face.vertices[i],q=face.vertices[(i+1)%3],edge=pairKey(cell.vertexIds[p],cell.vertexIds[q]);
+        const samples=cuts.filter(cut=>pairKey(...cut.vertices)===edge).sort((x,y)=>distance(x.point,cell.positions[p])-distance(y.point,cell.positions[p]));
+        ring.push(p,...samples.map(cut=>vertex(cut.point)));changed ||= samples.length>0;
+      }
+      if(!changed){builder.triangles.push(face.vertices);continue;}
+      const center=vertex([0,1,2].map(k=>face.vertices.reduce((sum,id)=>sum+cell.positions[id][k],0)/3));
+      for(let i=0;i<ring.length;i++)builder.triangles.push([center,ring[i],ring[(i+1)%ring.length]]);
+    }
+    return builder;
+  });
+}
+
+function bridgeBend(model,layout,operation) {
+  if(layout.cells.length>=500)fail('This study already has 500 cells. Merge cells before adding an across-bend cell.');
+  const minimum=nextLayoutCellId(layout),newCellId=operation.nextCellId??minimum;
+  if(!Number.isSafeInteger(newCellId)||newCellId<minimum||newCellId>=Number.MAX_SAFE_INTEGER)fail('The new panel ID is stale or invalid. Preview the across-bend cell again.');
+  const width=operation.widthMm;
+  if(!Number.isFinite(width)||width<=EPS*4)fail('Enter a positive across-bend width in millimetres; a nearly zero-width cell cannot be made.');
+  const seams=enumerateBendSeams(layout),seam=seams.find(item=>item.edgeIds.includes(operation.edgeId));
+  if(!seam)fail('Choose an existing shared edge between two cells, away from the shell perimeter.');
+  const selected=new Set(seam.cellIds),samePair=seams.filter(item=>item.cellIds.every(id=>selected.has(id)));
+  if(samePair.length!==1||distance(seam.points[0],seam.points.at(-1))<=EPS)fail('These cells do not meet along one open, unbranched seam. Choose a straighter shared edge, or reshape/divide these cells first.');
+  const parts=[],cuts=[],previewSegments=[];
+  for(const cellId of seam.cellIds){
+    let context;
+    try{context=splitContext(model,layout,cellId);}
+    catch(error){
+      if(/editing chart|local chart/.test(error.message))fail(`Panel P${String(cellId+1).padStart(3,'0')} curves too far to make a reliable cut in one projected view. Choose a smaller region, or divide/reshape this cell first.`);
+      throw error;
+    }
+    const {cell,local}=context;
+    let a=local.project(seam.points[0]),b=local.project(seam.points.at(-1));
+    const span=distance(a,b);
+    if(span<=EPS)fail('This shared seam has no usable end-to-end direction. Choose a straighter shared edge, or reshape/divide these cells first.');
+    // Source loops follow the positively oriented triangles in this validated
+    // chart. Their direction gives the inward side even if a seam bows across
+    // its endpoint chord; using all cell vertices would reject ordinary curves.
+    const first=key(seam.points[0]),second=key(seam.points[1]);
+    const forward=cell.loops.some(loop=>loop.some((id,i)=>key(cell.positions[id])===first&&key(cell.positions[loop[(i+1)%loop.length]])===second));
+    if(!forward)[a,b]=[b,a];
+    // Every seam segment must remain strictly within the joined strip. Signed
+    // distance is linear on each segment, so checking its endpoints suffices.
+    // Width is measured from the endpoint chord and varies along bowed seams.
+    if(seam.points.some(p=>side(a,b,local.project(p))/span>=width/2-EPS*4))fail('This seam curves beyond the proposed strip. Increase the width, choose a straighter shared edge, or reshape/divide these cells first.');
+    const inward=[-(b[1]-a[1])/span,(b[0]-a[0])/span],offset=p=>p.map((value,axis)=>value+inward[axis]*width/2);
+    // The validated chart determines a projected target width. Intersections
+    // are lifted on each original source triangle by splitGeometry, so curved
+    // shells retain their exact surface rather than being flattened here.
+    let divided;
+    try{divided=splitGeometry(model,layout,{cellId,start:local.lift(offset(a),local.faces[0]),end:local.lift(offset(b),local.faces[0])},newCellId);}
+    catch(error){
+      if(/both sides|negligible sliver/.test(error.message))fail('This width would use up a neighbouring cell or leave a sliver. Reduce the across-bend width.');
+      if(/disconnected pieces/.test(error.message))fail('This width would break a neighbouring cell into separate pieces. Reduce the width, or reshape/divide the cells first.');
+      throw error;
+    }
+    parts.push(divided);cuts.push(...divided.boundaryCuts);previewSegments.push(...divided.segments);
+  }
+  const strip={id:newCellId,seed:[...seam.points[Math.floor(seam.points.length/2)]],weight:1,memberSeedIds:[newCellId],positions:[],triangles:[]},vertices=new Map();
+  for(const divided of parts){
+    const half=divided.parts[1],remap=half.positions.map(p=>{const k=key(p);if(!vertices.has(k)){vertices.set(k,strip.positions.length);strip.positions.push([...p]);}return vertices.get(k);});
+    strip.triangles.push(...half.triangles.map(triangle=>triangle.map(id=>remap[id])));
+  }
+  const measured=rebuildSurfaceCells(model,[strip]).cells[0];
+  if(!measured||measured.sourceComponentCount!==1)fail('This width makes separate across-bend pieces. Reduce the width, or reshape/divide the two cells first.');
+  if(measured.holeCount)fail('This strip includes an opening in the source. Reduce the width or divide the cells beside the opening first.');
+  const affected=new Set([...selected,newCellId]),builders=bridgeNeighbours(layout,selected,cuts,affected);
+  builders.push(...parts.map(divided=>divided.parts[0]),strip);builders.sort((a,b)=>a.id-b.id);
+  const origins=new Map((layout.splitOrigins||[]).map(origin=>[origin.id,origin.sourceSeedIds]));
+  const sourceSeedIds=[...new Set(layout.cells.filter(cell=>selected.has(cell.id)).flatMap(cell=>cell.memberSeedIds.flatMap(id=>origins.get(id)||[id])))].sort((a,b)=>a-b);
+  // Existing v3 ancestry permits a primary parent plus a superset of its source
+  // seeds. Preserve both originals here; exact graph geometry remains authority.
+  const splitOrigin={id:newCellId,parentCellId:seam.cellIds[0],sourceSeedIds};
+  const result=finish(model,layout,builders,{removedCellIds:[],collapsedEdgeIds:[],newCellId,trimmedCellIds:[...seam.cellIds],
+    affectedCellIds:[...affected].sort((a,b)=>a-b),splitOrigin,widthMm:width,seamEdgeId:seam.edgeId});
+  result.change.previewSegments=previewSegments.map(p=>[...p]);
+  return result;
+}
+
+/** Complete source validation runs without changing the authored layout or
+ * reserving an ID. The returned mesh is the on-shell strip, not its fitted part. */
+export function previewBendBridge(model,layout,operation) {
+  try{
+    const result=transactLayout(model,layout,{...operation,type:'bridge-bend'}),cell=result.surface.cells.find(cell=>cell.id===result.change.newCellId);
+    return {positions:cell.positions.map(p=>[...p]),triangles:cell.triangles.map(t=>[...t]),segments:result.change.previewSegments,
+      cellIds:result.change.trimmedCellIds,affectedCellIds:result.change.affectedCellIds,area:cell.area,issue:null};
+  }catch(error){return {positions:[],triangles:[],segments:[],issue:error.message};}
+}
+
 function splitCell(model,layout,operation) {
   if(layout.cells.length>=500)fail('This study already has 500 cells. Merge cells before adding another.');
   const minimum=nextLayoutCellId(layout),newCellId=operation.nextCellId??minimum;
@@ -582,6 +698,7 @@ function splitCell(model,layout,operation) {
 /** Atomic direct graph transaction: no seed-field regeneration or hidden radius. */
 export function transactLayout(model, input, operation) {
   const layout=readLayout(input),source=restoreLayout(model,layout);
+  if(operation?.type==='bridge-bend')return bridgeBend(model,layout,operation);
   if(operation?.type==='split-cell')return splitCell(model,layout,operation);
   if(operation?.type==='move-cell')return moveCell(model,input,layout,source,operation);
   if(operation?.type==='merge-cells') {

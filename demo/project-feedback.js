@@ -192,10 +192,11 @@ function boundedIds(values) {
   return [...new Set((Array.isArray(values) ? values : []).filter(idOK))].sort((a, b) => a - b).slice(0, MAX_PANELS);
 }
 
-const editTypes = new Set(['move-corner', 'move-cell', 'offset-panel', 'reset-panel-offset', 'reset-panel-offsets', 'split-cell', 'merge-cells', 'delete-cell', 'remove-cell', 'add-cell', 'restore-cell', 'reset-corners', 'reset-layout', 'new-arrangement', 'settings', 'update-settings', 'units', 'orientation', 'import', 'open', 'undo', 'redo', 'edit', 'history', 'preference', 'reserve-panel-id', 'create-checkpoint', 'delete-checkpoint']);
+const editTypes = new Set(['move-corner', 'move-cell', 'offset-panel', 'reset-panel-offset', 'reset-panel-offsets', 'split-cell', 'bridge-bend', 'merge-cells', 'delete-cell', 'remove-cell', 'add-cell', 'restore-cell', 'reset-corners', 'reset-layout', 'new-arrangement', 'settings', 'update-settings', 'units', 'orientation', 'import', 'open', 'undo', 'redo', 'edit', 'history', 'preference', 'reserve-panel-id', 'create-checkpoint', 'delete-checkpoint']);
 function eventSummary(event) {
   if (!event || typeof event !== 'object') return null;
   const result = { type: editTypes.has(event.type) ? event.type : 'other' };
+  if (event.type === 'bridge-bend' && Number.isFinite(event.widthMm) && event.widthMm > 0 && event.widthMm <= 1e7) result.widthMm = event.widthMm;
   // Direct graph handles identify topology. Legacy corner IDs can encode source
   // coordinates, so only the explicit coordinate-free graph form is shareable.
   if (typeof event.cornerId === 'string' && event.cornerId.length <= 64 && /^vertex:v\d+$/.test(event.cornerId)) result.cornerId = event.cornerId;

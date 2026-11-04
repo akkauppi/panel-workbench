@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 790" role="img" aria-labelledby="title description">
+  <title id="title">A new flat cell across a bend</title>
+  <desc id="description">Conceptual before and after diagrams. In section, panels A and B meet at a ridge; a new flat bridge C cuts across it while the original source shell remains as a dashed line. In plan, a narrow strip on both sides of the old shared seam becomes cell C, and cells A and B are trimmed. The actual preview and checked fitted geometry determine the final outlines.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#597087"/></marker>
+  </defs>
+  <rect width="1200" height="790" fill="#f6f8fb"/>
+  <g font-family="Arial,sans-serif" fill="#21384c">
+    <text x="28" y="39" font-size="27" font-weight="bold">Across bend: make room for a flat bridge</text>
+    <text x="28" y="70" font-size="17">Conceptual geometry. Exact outlines and neighbouring planes depend on the checked fit.</text>
+    <g fill="white" stroke="#c1cdd9">
+      <rect x="24" y="96" width="552" height="272" rx="10"/>
+      <rect x="624" y="96" width="552" height="272" rx="10"/>
+      <rect x="24" y="388" width="552" height="310" rx="10"/>
+      <rect x="624" y="388" width="552" height="310" rx="10"/>
+    </g>
+    <text x="44" y="127" font-size="21" font-weight="bold">Before · section</text>
+    <text x="644" y="127" font-size="21" font-weight="bold">After · fitted section</text>
+    <path d="M90 295 300 155" fill="none" stroke="#4478aa" stroke-width="6"/>
+    <path d="M300 155 510 295" fill="none" stroke="#398261" stroke-width="6"/>
+    <circle cx="300" cy="155" r="6" fill="#21384c"/>
+    <text x="160" y="274" font-size="20" fill="#315f8b">A</text>
+    <text x="428" y="274" font-size="20" fill="#286b4d">B</text>
+    <text x="208" y="334" font-size="17">Two cells share the bend.</text>
+    <path d="M690 295 900 155 1110 295" fill="none" stroke="#8d9dad" stroke-width="3" stroke-dasharray="7 6"/>
+    <path d="M690 295 844 192.33" fill="none" stroke="#4478aa" stroke-width="6"/>
+    <path d="M956 192.33 1110 295" fill="none" stroke="#398261" stroke-width="6"/>
+    <path d="M844 192.33H956" stroke="#c67b13" stroke-width="8"/>
+    <text x="751" y="275" font-size="20" fill="#315f8b">A</text>
+    <text x="1032" y="275" font-size="20" fill="#286b4d">B</text>
+    <text x="857" y="230" font-size="18" fill="#955806">Bridge C</text>
+    <text x="974" y="162" font-size="16" fill="#64788c">Source shell</text>
+    <path d="M977 168 931 174" fill="none" stroke="#8d9dad" stroke-width="1.5"/>
+    <text x="665" y="334" font-size="17">A gap from the source can be intentional.</text>
+    <text x="44" y="419" font-size="21" font-weight="bold">Before · cell layout in plan</text>
+    <text x="644" y="419" font-size="21" font-weight="bold">After · source-cell preview in plan</text>
+    <path d="M90 449H300V647H90Z" fill="#dceaf8" stroke="#4478aa" stroke-width="2"/>
+    <path d="M300 449H510V647H300Z" fill="#e1f1e7" stroke="#398261" stroke-width="2"/>
+    <path d="M300 449V647" stroke="#21384c" stroke-width="4"/>
+    <text x="184" y="555" font-size="23" fill="#315f8b">A</text>
+    <text x="394" y="555" font-size="23" fill="#286b4d">B</text>
+    <text x="218" y="679" font-size="16">Shared source seam</text>
+    <path d="M690 449H844V647H690Z" fill="#dceaf8" stroke="#4478aa" stroke-width="2"/>
+    <path d="M956 449H1110V647H956Z" fill="#e1f1e7" stroke="#398261" stroke-width="2"/>
+    <path d="M844 449H956V647H844Z" fill="#fce5ae" fill-opacity=".85" stroke="#c67b13" stroke-width="3"/>
+    <path d="M900 449V647" stroke="#8d9dad" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="756" y="555" font-size="23" fill="#315f8b">A</text>
+    <rect x="882" y="530" width="36" height="36" rx="5" fill="#fce5ae"/>
+    <text x="891" y="555" font-size="23" fill="#955806">C</text>
+    <text x="1022" y="555" font-size="23" fill="#286b4d">B</text>
+    <text x="715" y="679" font-size="16">A and B keep their IDs; C spans the old seam.</text>
+    <path d="M582 246H615" stroke="#597087" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M582 548H615" stroke="#597087" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="28" y="735" font-size="18">Width targets half on each side of an end-to-end reference in its local projected chart.</text>
+    <text x="28" y="766" font-size="18">The final flat width and neighbour positions are determined by fitting; this sketch does not guarantee them.</text>
+  </g>
+</svg>

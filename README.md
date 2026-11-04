@@ -14,6 +14,14 @@ Move cells remains available after corner edits, merges and for structured layou
 
 Select one cell and choose **Divide cell**. Drag a line inside it to set a divider; the preview extends to its boundary and follows the source shell. Release creates two cells as one Undo step. Cuts that make disconnected pieces or unusable slivers are rejected with an explanation. The new panel has a stable ID, and saved studies retain the split and original generator provenance.
 
+Choose **Across bend**, click a shared cell seam and enter a width to preview a
+small panel spanning the bend. **Apply** adds the panel and trims its two
+neighbours; **Cancel** or Escape keeps the arrangement unchanged. The preview
+checks the source first, then shows the fitted panel and its validity. Width is
+a projected target; review the actual shape, especially along curved seams.
+Undo, saved studies and source edit locks apply. Read the illustrated
+[Across bend guide](docs/across-bend.md) for the controls and limits.
+
 **Explode panels** spreads parts using their positions, sizes and outward
 directions, including adjoining coplanar panels. Release the slider to frame the
 spread. Optional **Assembly guides** show dashed assembled outlines and lines
@@ -139,6 +147,10 @@ Real Chromium checks are available in `scripts/check-project-browser.cjs` (editi
 inspection, checkpoint comparison and restore, Rhino handoff ZIP contents and
 hashes, optional feedback attachments, and dialog layout. Pass the site URL as
 its first argument and `PANEL_EXPECTED_BUILD` to verify a particular release.
+
+`scripts/check-across-bend-browser.cjs` checks seam selection, previews,
+Apply/Cancel, saved geometry, Undo and locked-cell rejection on a synthetic
+creased shell in Chromium.
 
 `scripts/check-curvature-browser.cjs` exercises adaptive Regularized generation,
 staged controls, history, saved projects, local resume and rejected ranges on a
